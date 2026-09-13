@@ -11,15 +11,7 @@
 <body class="login-body">
   <div class="login-wrap">
     <form class="login-card" id="loginForm" autocomplete="off">
-      <div class="login-mark" aria-hidden="true">
-        <svg viewBox="0 0 100 100" width="22" height="22">
-          <g fill="#fff">
-            <rect x="46" y="14" width="8" height="72" rx="4"/>
-            <rect x="46" y="14" width="8" height="72" rx="4" transform="rotate(60 50 50)"/>
-            <rect x="46" y="14" width="8" height="72" rx="4" transform="rotate(120 50 50)"/>
-          </g>
-        </svg>
-      </div>
+      <div class="login-mark" aria-hidden="true">C</div>
       <div class="login-boot">
         <p>Claude Code Web</p>
         <p class="dim">Davom etish uchun parolni kiriting</p>
@@ -30,29 +22,7 @@
       <div class="error-msg" id="errorMsg"></div>
     </form>
   </div>
-  <script>
-    const form = document.getElementById('loginForm');
-    const errorMsg = document.getElementById('errorMsg');
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      errorMsg.textContent = '';
-      const password = document.getElementById('password').value;
-      try {
-        const res = await fetch('/api/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password })
-        });
-        if (res.ok) {
-          window.location.href = '/';
-        } else {
-          const data = await res.json().catch(() => ({}));
-          errorMsg.textContent = data.error || 'Parol noto\'g\'ri';
-        }
-      } catch (err) {
-        errorMsg.textContent = 'Serverga ulanib bo\'lmadi';
-      }
-    });
-  </script>
+  <script src="/login.js"></script>
+
 </body>
 </html>

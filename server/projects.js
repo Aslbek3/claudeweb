@@ -1,21 +1,24 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { writeJsonAtomic, readJson } = require('./atomicFile');
 
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'projects.json');
 
 function load() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch {
-    return [];
-  }
+  const items = readJson(DATA_FILE, []);
+  return Array.isArray(items) ? items : [];
 }
 
+// ⚠️ Atomik yozuv (`atomicFile.js`). Avval bu oddiy `writeFileSync` edi,
+// holbuki xuddi shu papkadagi `sessions_meta.json` allaqachon tmp+rename
+// bilan atomik yozilardi — bir xil muhimlikdagi ikki fayl uchun ikki xil
+// kafolat. Yozuv paytida protsess o'lsa (pm2 restart, OOM-kill)
+// `projects.json` yarim yozilgan qolar, keyingi `load()` `catch`ga tushib
+// bo'sh ro'yxat qaytarardi — ya'ni BARCHA loyihalar jimgina yo'qolardi.
 function save(items) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(items, null, 2));
+  writeJsonAtomic(DATA_FILE, items, true);
 }
 
 function list() {
@@ -38,10 +41,10 @@ function seed(absPath, label) {
 }
 
 // `description` — Claude'ga har safar yangi sessiya boshlanganda avtomatik
-// uzatiladigan qisqa kontekst (masalan "tolov-bot, to'lov qabul qiluvchi
-// bot, ..."), `pm2Name` — shu loyihaga bog'liq PM2 process nomi (bo'lsa,
-// "botlar" panelida loyiha bilan bog'lab status ko'rsatish uchun). Ikkisi
-// ham ixtiyoriy — bo'sh qoldirilsa avvalgi xatti-harakat o'zgarmaydi.
+// uzatiladigan qisqa kontekst (masalan "poster-02, @avtopost3_bot, ..."),
+// `pm2Name` — shu loyihaga bog'liq PM2 process nomi (bo'lsa, "botlar"
+// panelida loyiha bilan bog'lab status ko'rsatish uchun). Ikkisi ham
+// ixtiyoriy — bo'sh qoldirilsa avvalgi xatti-harakat o'zgarmaydi.
 function upsert(rawPath, label, description, pm2Name) {
   const resolved = path.resolve(rawPath);
   const stat = fs.statSync(resolved);

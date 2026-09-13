@@ -283,3 +283,74 @@ Foydalanuvchi so'rovi: admin menyuga taom qo'shayotganda/tahrirlayotganda tan na
 - VPS tizim Node.js eski (v12.22.9) — shuning uchun `/usr/local/bin/node22` kerak.
 - `.env`dagi `PROJECT_DIR=./workspace` papkasi — Claude shu yerda ishlaydi (fayl o'qish/yozish/bajarish). Bu papka yo'q bo'lsa server "native binary failed to launch" degan CHALG'ITUVCHI xato beradi (asl sabab: `cwd` mavjud emas, libc/musl bilan aloqasi yo'q).
 - `server/index.js` boshida `CLAUDE_*`/`CLAUDECODE`/`AI_AGENT` env o'zgaruvchilari tozalanadi — agar bu server biror Claude Code sessiyasi ichidan (masalan qo'lda pm2 start) ishga tushirilsa, begona sessiya o'zgaruvchilari ichki `claude` jarayoniga aralashib ketmasin deb.
+
+## Holat — 2026-09-14: kod rootweb bilan birlashtirildi (bitta manba)
+
+Bu loyiha va `rootweb` — ikki xil **shaxs** (alohida repo, alohida tizim
+foydalanuvchisi, alohida Claude hisobi, alohida limit), lekin endi **kod
+bitta**. Farqlar faqat `.env` va `server/config.js` da to'planadi.
+
+`INSTANCE_MODE=sandbox` bu yerda nimani anglatadi:
+
+| Sozlama | Bu yerda | rootweb'da |
+|---|---|---|
+| Standart ruxsat rejimi | `manual` | `avto` |
+| Favqulodda amallar (unban, UFW) | o'chirilgan (403) | yoqilgan |
+| `/savdo` proksisi | yoqilgan (`PROXY_PORT=3212`) | o'chirilgan |
+| "Qurilmalar" tabi | yoqilgan | o'chirilgan |
+| Bir vaqtdagi sessiyalar | 2 | 3 |
+
+**Nega birlashtirildi:** rootweb'da 20 dan ortiq xavfsizlik va UI tuzatishi
+qilingan edi, bu yerda ularning BIRORTASI yo'q edi — chunki har bir tuzatish
+ikki marta qilinishi kerak edi va biri unutilardi.
+
+### Shu bilan kelgan xavfsizlik tuzatishlari
+
+Batafsil: `docs/xavfsizlik-tuzatishlari.md`
+
+- **CSWSH** — WebSocket handshake'ida `Origin` tekshiruvi yo'q edi. Siz bu
+  saytga login qilgan holda istalgan boshqa saytga kirsangiz, o'sha sayt
+  `wss://.../ws` ochib, 8 ta botni to'xtatish/o'zgartirish va ularning
+  `.env` tokenlarini o'qish imkoniga ega bo'lardi. ACL buni to'smasdi —
+  botlar shu foydalanuvchining o'z domenida.
+- **Sessiya tokeni** o'zgarmas edi (`sign('ok')`), muddati serverda
+  tekshirilmasdi, "Chiqish" uni bekor qilmasdi — o'g'irlangan cookie
+  abadiy ishlardi.
+- **Bash siyosati** faqat denylist edi. `echo ... | base64 -d | sh`,
+  `find -delete`, `python3 - <<EOF`, `cat x.py | python3` kabi usullar
+  bemalol chetlab o'tardi. Endi allowlist + denylist, testlar bilan
+  (`npm test` — 17 ta test).
+- **XSS** — `auth.html` da jarayonning xom chiqishi `innerHTML` ga
+  qo'yilardi; `escapeHtml` atribut kontekstida qo'shtirnoqni o'tkazardi.
+- **CSP va clickjacking sarlavhalari** yo'q edi.
+- **Login urinishlari** ilovada cheklanmagan edi.
+- **highlight.js** cdnjs'dan SRI'siz yuklanardi — CDN buzilsa
+  autentifikatsiyalangan origin ichida ixtiyoriy JS.
+- Atomik fayl yozuvi, audit-log rotatsiyasi, `permissionMode` tiklanishi.
+
+### Yangi funksiyalar
+
+- **VPS holati** tabi — yuklama, xotira, disk (Claude'siz, 0 token)
+- **Botlar panelida 💬 suhbat** — papka PM2'ning `pm_cwd` idan olinadi,
+  sessiya to'g'ridan-to'g'ri o'sha papkada toza holda boshlanadi.
+  `CLAUDE.md` avtomatik o'qiladi, `OXIRGI-ISH.md` oxirgi amallarni aytadi.
+  "Loyihani top" deb yozish shart emas.
+- Sozlamalar paneli, chatda qidiruv, tez buyruqlar, tool natijasini
+  ko'rish, PWA (offline qobiq), "Tizim" mavzusi.
+
+### ⚠️ Resurs cheklovi hali QO'YILMAGAN
+
+O'lchandi (2026-09-13): 26 root bot ~3.3 GB + 8 bot (bu yerda) ~1.2 GB +
+tizim ~0.5 GB. Har ochiq Claude sessiyasi ustiga 300-400 MB. Hech qanday
+cheklov yo'q — xotira tugasa OOM killer qurbonni **o'zi tanlaydi**, u
+PostgreSQL yoki to'lov boti bo'lishi mumkin.
+
+ACL izolyatsiyasi *nimaga kirishni* cheklaydi, *qancha yeyishni* emas.
+
+`deploy/systemd-limits.conf` tayyor, lekin **o'rnatilmagan**. Avval
+`free -h` va `nproc` bilan VPS resursini tekshirib, qiymatlarni moslang.
+Batafsil: `docs/resurs-cheklovi.md`.
+
+Kod ichidagi cheklov allaqachon ishlaydi: `MAX_SESSIONS=2`,
+`SESSION_IDLE_MINUTES=45`. Suhbat yo'qolmaydi — tarix diskda qoladi,
+faqat subprocess bo'shaydi. Ish bajarayotgan sessiya hech qachon yopilmaydi.

@@ -1,8 +1,10 @@
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 const { query } = require('@anthropic-ai/claude-agent-sdk');
 const auditLog = require('./auditLog');
+const { isAutoApprovable } = require('./bashPolicy');
+const { writeJsonAtomic, readJson } = require('./atomicFile');
+const config = require('./config');
 
 // Tool calls that are read-only / low-risk are auto-approved so a phone
 // session isn't interrupted by a permission prompt on every file read.
@@ -10,59 +12,104 @@ const auditLog = require('./auditLog');
 const SAFE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'TodoWrite']);
 
 // Auto-approved on top of SAFE_TOOLS only while permissionMode === 'acceptEdits'
-// ("avto" rejim) — file-edit tools, plus non-destructive Bash commands (see
-// isDangerousBash below). Anything else still asks.
+// ("avto" rejim) — file-edit tools, plus Bash commands that pass the
+// allowlist+denylist policy in `bashPolicy.js`. Anything else still asks.
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 
-// Bash command patterns that must always ask for confirmation, even in
-// "avto" mode — destructive deletes, privilege escalation, pipe-to-shell,
-// force-push, raw-device writes, etc. Everything that does NOT match one of
-// these is treated as "safe enough" to auto-run in acceptEdits mode (mirrors
-// an allowlisted-but-still-guarded Bash tool, not a fully open one).
-const DANGEROUS_BASH_PATTERNS = [
-  /\bsudo\b/,
-  /\bdd\s+if=/,
-  /\bmkfs\b/,
-  /:\(\)\s*\{\s*:\s*\|\s*:\s*&?\s*\}\s*;\s*:/, // fork bomb
-  /chmod\s+(-R\s+)?0?777\b/,
-  /chown\s+-R\b/,
-  /(curl|wget)\b[^|;&\n]*\|\s*(sh|bash|zsh)\b/, // pipe-to-shell
-  /git\s+push\b[^|;&\n]*(--force\b|-f\b)/,
-  /\b(shutdown|reboot|halt|poweroff)\b/,
-  /\bkillall\b|kill\s+-9\s+1\b/,
-  /\b(iptables|ufw|firewall-cmd)\b/,
-  />>?\s*\/etc\//,
-  /\bcrontab\s+-r\b/,
-  /--no-preserve-root/,
+// Muloqot uslubi ko'rsatmasi — har bir sessiyaning tizim promptiga
+// qo'shiladi (`systemPrompt.append`).
+//
+// Nega kerak: bu ilova telefondan, dasturchi bo'lmagan odam tomonidan
+// ishlatiladi. Terminaldagi Claude Code ketma-ket tool chaqirib, orasida
+// hech narsa yozmasligi mumkin — u yerda buyruq va chiqish baribir
+// ko'rinib turadi. Bu yerda esa foydalanuvchi faqat tool kartochkalarini
+// ko'radi va "nima bo'layapti, nimaga ruxsat berayapman?" degan holatga
+// tushadi. Shuning uchun izohlab borish talab qilinadi.
+const UI_STYLE_PROMPT = `Muloqot uslubi (bu ilova uchun majburiy):
 
-  // --- rootweb'dan ko'chirilgan qo'shimcha qatlam: bu process claudeweb'ning
-  // O'Z izolyatsiyalangan PM2 daemonida (10+ boshqa bot) ishlaydi — "avto"
-  // rejimda ham qo'shni botlarni/xizmatlarni yiqitadigan buyruqlar har doim
-  // so'raladi, hatto ular claudeweb ACL doirasida "ruxsat etilgan" bo'lsa ham.
-  /\bpm2\s+(delete|stop|kill)\b/,
-  /\bdocker\s+(rm|rmi|kill|stop)\b/,
-  /\bdocker(-compose)?\s+(down|system\s+prune)\b/,
-  /\b(systemctl|service)\s+\S*\s*(stop|disable|mask)\b/,
-  /\bDROP\s+(DATABASE|TABLE|SCHEMA)\b/i,
-  /\bflush(all|db)\b/i,
-];
+- Foydalanuvchi bilan O'ZBEK TILIDA gaplash.
+- Foydalanuvchi dasturchi EMAS va bu ilovani telefondan ishlatadi.
+- Tool (Bash, Read, Edit va h.k.) ishlatishdan OLDIN bir-ikki jumlada nima
+  qilmoqchi ekaningni va nega kerakligini yoz. Jim ishlama — foydalanuvchi
+  ekranda faqat kartochkalarni ko'radi, buyruqning o'zini emas.
+- Bash tool'ida "description" maydoni MAJBURIY va O'ZBEKCHA bo'lsin —
+  qisqa, 3-6 so'z (masalan "Botlar ro'yxatini olaman", "Ping loglarini
+  tahlil qilaman"). Foydalanuvchi ekranda AYNAN SHU matnni ko'radi,
+  buyruqning o'zini emas. Description bo'lmasa u yerda tushunarsiz kod
+  ko'rinadi — ayniqsa ko'p qatorli skript yoki python heredoc yozsang.
+  Buyruq uzun bo'lgani sayin description muhimroq bo'ladi.
+- Xavfli yoki qaytarib bo'lmaydigan amal (o'chirish, to'xtatish, qayta
+  yozish) oldidan nima yo'qolishi mumkinligini ochiq ayt.
+- Texnik atama ishlatsang, qavs ichida bir og'iz izohla.
+- Ish tugagach qisqacha xulosa qil: nima qilindi va natija nima bo'ldi.
+- Uzun ro'yxat va kod devorlarini tashlama — telefonda o'qish qiyin.`;
 
-function isDangerousBash(command) {
-  if (typeof command !== 'string' || !command.trim()) return true; // shakli noaniq -> ehtiyot bo'lib so'raladi
-  if (DANGEROUS_BASH_PATTERNS.some((re) => re.test(command))) return true;
-  // rm force+recursive: checked separately (not one regex) so "rm -r -f",
-  // "rm --recursive --force" and "rm -rf" are all caught regardless of how
-  // the flags are grouped.
-  if (/\brm\b/.test(command)) {
-    const hasRecursive = /-[a-zA-Z]*[rR][a-zA-Z]*\b/.test(command) || /--recursive\b/.test(command);
-    const hasForce = /-[a-zA-Z]*f[a-zA-Z]*\b/.test(command) || /--force\b/.test(command);
-    if (hasRecursive && hasForce) return true;
-  }
-  return false;
+// Bot suhbati uchun qo'shimcha ko'rsatma.
+//
+// Muammo: har safar "sen VPS'dasan, T loyihani top" deb yozish kerak edi —
+// Claude `find`/`ls`/`cat` bilan 5-10 buyruq sarflab loyihani qidirardi,
+// asosiy ish esa hali boshlanmagan bo'lardi.
+//
+// Yechim: botlar panelidagi 💬 tugma sessiyani TO'G'RIDAN-TO'G'RI o'sha
+// botning papkasida ochadi (papka PM2'ning o'zidan olinadi). Claude Code
+// `CLAUDE.md`ni avtomatik o'qiydi, `OXIRGI-ISH.md` esa oxirgi amallarni
+// aytadi — ya'ni suhbat birinchi xabardanoq kontekst bilan boshlanadi.
+function botPrompt(botName) {
+  return `Sen hozir "${botName}" boti ustida ishlayapsan. Ish papkasi — shu sessiyaning cwd'si.
+
+- Loyihani QIDIRISH shart emas: allaqachon uning papkasidasan.
+- Bu papkadan tashqariga chiqma. Boshqa bot yoki loyiha so'ralsa, foydalanuvchiga "botlar panelidan o'sha botni tanlang" deb ayt.
+- Papkada CLAUDE.md bo'lsa — u loyihaning asosiy ma'lumoti. OXIRGI-ISH.md bo'lsa — oxirgi amallar tarixi. Ikkalasini ishning boshida hisobga ol.
+- CLAUDE.md yo'q bo'lsa va foydalanuvchi so'rasa — loyihani o'rganib, qisqa CLAUDE.md yozib ber (nima qiladi, qanday ishga tushadi, muhim fayllar, ehtiyot bo'lish kerak bo'lgan joylar).
+
+Ish tugagach OXIRGI-ISH.md ni yangila:
+- Fayl yo'q bo'lsa yarat.
+- Eng YUQORIGA yangi yozuv qo'sh: "## YYYY-MM-DD — qisqa sarlavha", keyin 3-6 qator: nima qilindi, qaysi fayl o'zgardi, natija, keyingi qadam (bo'lsa).
+- Faylda 10 tadan ortiq yozuv to'plansa, eng eskilarini OXIRGI-ISH-ARXIV.md ga ko'chir — bu fayl har sessiyada o'qiladi, shuning uchun qisqa qolishi kerak.
+- Hech narsa o'zgartirmagan bo'lsang (faqat ko'rdim/tekshirdim) — yozuv qo'shma.`;
 }
 
 // How many past events to keep for replay when a client (re)connects.
 const MAX_HISTORY = 500;
+
+// Tool natijasi uchun ikkita alohida chegara (`emitSplit`ga qara):
+// jonli ulangan klient to'liqroq chiqishni oladi, diskdagi tarixga esa
+// ancha qisqasi tushadi — aks holda bitta `pm2 logs`/`cat` natijasi
+// `sessions_meta.json`ni megabaytlarga shishirib yuborardi.
+const LIVE_OUTPUT_MAX = 16 * 1024;
+const HISTORY_OUTPUT_MAX = 2 * 1024;
+
+// SDK'ning `tool_result` bloki mazmuni yo oddiy satr, yo content-blok
+// massivi bo'lishi mumkin — ikkalasini ham matnga keltiramiz.
+function extractToolOutput(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => {
+        if (typeof b === 'string') return b;
+        if (b && b.type === 'text') return b.text || '';
+        if (b && b.type === 'image') return '[rasm]';
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function clampOutput(text, max) {
+  if (!text) return { output: '', truncated: false };
+  if (text.length <= max) return { output: text, truncated: false };
+  // Oxiri ko'pincha muhimroq (xato xabari, oxirgi loglar), lekin boshi ham
+  // kerak — shuning uchun ikkala uchini olamiz.
+  const head = text.slice(0, Math.floor(max * 0.6));
+  const tail = text.slice(-Math.floor(max * 0.4));
+  return {
+    output: `${head}\n\n… [${text.length - max} belgi tashlab ketildi] …\n\n${tail}`,
+    truncated: true,
+    fullLength: text.length,
+  };
+}
 
 // One persistent Claude Agent SDK conversation per project, kept alive in
 // memory for as long as the server process runs. A `pm2 restart` (deploy,
@@ -87,43 +134,60 @@ const sessions = new Map(); // projectId -> session
 // Per-project { sdkSessionId, cwd, permissionMode, history } snapshot,
 // persisted to disk so a restart can both resume Claude's own context
 // (sdkSessionId) and redraw the visible chat instantly (history) without
-// waiting for a new message. Full rewrite on every save — history is capped
-// at MAX_HISTORY and carries no image bytes (see pushUserMessage), so even
-// with several open projects this file stays small.
+// waiting for a new message.
 const SESSIONS_META_FILE = path.join(__dirname, 'data', 'sessions_meta.json');
 
-function loadSessionsMeta() {
-  try {
-    return JSON.parse(fs.readFileSync(SESSIONS_META_FILE, 'utf8'));
-  } catch {
-    return {};
+let sessionsMeta = readJson(SESSIONS_META_FILE, {});
+
+// ⚠️ Yozuv DEBOUNCE qilinadi. Avval `record()` har bir voqeada butun
+// `sessionsMeta`ni (BARCHA loyihalarning to'liq tarixi bilan) serializatsiya
+// qilib, sinxron diskka yozardi. Claude bitta javobda 20-50 ta voqea yuboradi
+// (matn bloklari, tool_use, tool_result), ya'ni 30 loyiha × 500 voqea har bir
+// blokda qaytadan yozilardi — bu event loop'ni bloklab, BOSHQA barcha WS
+// sessiyalarini ham sekinlashtirardi.
+//
+// Endi yozuv 1 soniyaga yig'iladi. Ma'lumot yo'qolmasligi uchun `flush()`
+// protsess tugashida (SIGINT/SIGTERM/exit) majburan chaqiriladi.
+const PERSIST_DEBOUNCE_MS = 1000;
+let persistTimer = null;
+
+function flushSessionsMeta() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
   }
+  writeJsonAtomic(SESSIONS_META_FILE, sessionsMeta);
 }
 
-let sessionsMeta = loadSessionsMeta();
-
-function saveSessionsMeta() {
-  try {
-    const tmp = `${SESSIONS_META_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(sessionsMeta));
-    fs.renameSync(tmp, SESSIONS_META_FILE); // atomic swap — a kill mid-write can't corrupt the real file
-  } catch (err) {
-    console.error('sessions_meta.json saqlashda xato:', err && err.message);
-  }
+function scheduleSave() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    writeJsonAtomic(SESSIONS_META_FILE, sessionsMeta);
+  }, PERSIST_DEBOUNCE_MS);
+  // Kutilayotgan yozuv protsessni tirik ushlab turmasin.
+  if (persistTimer.unref) persistTimer.unref();
 }
 
 function persistSessionMeta(projectId, data) {
   sessionsMeta[projectId] = data;
-  saveSessionsMeta();
+  scheduleSave();
 }
 
 function clearSessionMeta(projectId) {
   if (!(projectId in sessionsMeta)) return;
   delete sessionsMeta[projectId];
-  saveSessionsMeta();
+  // O'chirish darhol yozilsin — "chatni tozalash"dan keyin darrov restart
+  // bo'lsa, endigina tozalangan suhbat qayta tirilib qolmasligi kerak.
+  flushSessionsMeta();
 }
 
-function createSession(projectId, cwd, description) {
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => { flushSessionsMeta(); process.exit(0); });
+}
+process.once('exit', flushSessionsMeta);
+
+function createSession(projectId, cwd, description, botName) {
   const savedMeta = sessionsMeta[projectId];
   const clients = new Set();
   // Pre-seed from disk (see SESSIONS_META_FILE note above) so a reconnecting
@@ -137,23 +201,26 @@ function createSession(projectId, cwd, description) {
   let busy = false;
   let cwdResolved = cwd;
   let sdkSessionId = (savedMeta && savedMeta.sdkSessionId) || null;
-  // claudeweb standart ravishda "manual" (default) rejimda boshlanadi —
-  // rootweb'dan farqli (u root sifatida ishlaydi va boshlang'ich "avto"
-  // rejimni tanlagan), claudeweb izolyatsiyalangan bo'lsa ham har bir
-  // amalni ko'rib chiqish odatiy xatti-harakat sifatida saqlanadi.
-  let permissionMode = 'default';
-  // Model tanlovi ("Sonnet" ↔ "Opus" pill tugmasi) — saqlangan meta'dan
-  // tiklanadi (server restart bo'lsa ham foydalanuvchining tanlovi
-  // yo'qolmasin), yo'q bo'lsa standart "sonnet" bilan boshlanadi.
-  let currentModel = (savedMeta && savedMeta.model) || 'sonnet';
-  // Sessiya davomida yig'ilib boruvchi foydalanish statistikasi ("limit"
-  // panelidagi "usage" bo'limi uchun) — input/output token har bir SDK
-  // 'result' navbatida qo'shiladi, total_cost_usd esa SDK'ning o'zi
-  // kumulyativ hisoblab beradi (shunchaki oxirgi qiymat saqlanadi).
-  let cumulativeInputTokens = 0;
-  let cumulativeOutputTokens = 0;
-  let totalCostUsd = 0;
-
+  // rootweb instansiyasi standart ravishda "avto" (acceptEdits) rejimda
+  // boshlanadi — claudeweb'dan farqli, chunki bu tool root sifatida ishlaydi
+  // va Aslbek har safar qo'lda [avto] tugmasini bosishni xohlamaydi.
+  //
+  // ⚠️ MUHIM: avval bu qator shartsiz `'acceptEdits'` edi, holbuki
+  // `persistSessionMeta()` `permissionMode`ni diskka YOZIB turardi — ya'ni
+  // saqlangan qiymat hech qachon O'QILMASDI. Oqibati fail-open edi: xavfli
+  // ish oldidan ataylab `[manual]` rejimiga o'tsangiz, keyingi `pm2 restart`
+  // (yoki crash, yoki deploy) sessiyani jimgina yana "avto" rejimda
+  // tiklardi va buni hech kim sezmasdi. Endi saqlangan rejim tiklanadi;
+  // qiymat notanish bo'lsa eng XAVFSIZ rejimga ('default' — hammasi
+  // so'raladi) tushamiz, eng qulayiga emas.
+  // Standart rejim instansiyaga bog'liq (`config.js`): root'da "avto",
+  // sandbox'da "manual" — u yerda mijozlarga xizmat qiladigan botlar kodi
+  // turadi, har o'zgarish ko'z bilan tasdiqlansin.
+  const ALLOWED_MODES = new Set(['default', 'plan', 'acceptEdits']);
+  let permissionMode = config.DEFAULT_PERMISSION_MODE;
+  if (savedMeta && typeof savedMeta.permissionMode === 'string') {
+    permissionMode = ALLOWED_MODES.has(savedMeta.permissionMode) ? savedMeta.permissionMode : 'default';
+  }
   function wake() {
     if (resolveNext) {
       const r = resolveNext;
@@ -172,7 +239,7 @@ function createSession(projectId, cwd, description) {
   function record(event) {
     history.push(event);
     if (history.length > MAX_HISTORY) history.shift();
-    persistSessionMeta(projectId, { sdkSessionId, cwd: cwdResolved, permissionMode, model: currentModel, history });
+    persistSessionMeta(projectId, { sdkSessionId, cwd: cwdResolved, permissionMode, history });
   }
 
   function emit(event) {
@@ -180,9 +247,28 @@ function createSession(projectId, cwd, description) {
     broadcast(event);
   }
 
+  // Jonli ulangan klientlarga BOSHQA (kattaroq) nusxa, diskdagi tarixga esa
+  // qisqartirilgan nusxa yuboradi. Faqat `tool_result` uchun kerak: xom
+  // chiqish megabaytlarga yetishi mumkin va uni to'liq holda `history`ga
+  // (demak `sessions_meta.json`ga) yozib qo'yish faylni shishirib yuborardi.
+  function emitSplit(liveEvent, historyEvent) {
+    record(historyEvent);
+    broadcast(liveEvent);
+  }
+
   // Lives for the lifetime of the session (never ended by a client
   // disconnecting) so a task Claude is running keeps going in the
   // background even while nobody is looking at it.
+  //
+  // Claude ishlayotgan paytda yuborilgan xabar shu navbatga tushadi va
+  // joriy navbat tugagach ishlanadi — xuddi terminaldagi Claude Code kabi
+  // ("steering"). Klient bunday xabarni "navbatda" deb belgilaydi.
+  //
+  // ⚠️ Bu yerdan "xabar uzatildi" signalini yuborish urinib ko'rilgan va
+  // TASHLANGAN: SDK oqimdan xabarni deyarli darhol o'z buferiga oladi
+  // (Claude uni qachon ishlashidan qat'i nazar), ya'ni bunday signal
+  // "navbatda emas" degan noto'g'ri ma'lumot berardi. Navbat holatini
+  // klient o'zi kuzatadi — `result` (navbat tugashi) chegarasi bo'yicha.
   async function* inputStream() {
     while (true) {
       if (messageQueue.length > 0) {
@@ -197,17 +283,34 @@ function createSession(projectId, cwd, description) {
     prompt: inputStream(),
     options: {
       cwd,
-      permissionMode: 'default',
-      model: currentModel,
-      // Loyiha tavsifi ("loyihalar" panelidagi description maydoni) bo'lsa,
-      // Claude Code'ning standart tizim promptiga qo'shimcha sifatida
-      // qo'shiladi — shuning uchun sessiya boshlanishi bilanoq Claude bu
-      // qaysi loyiha/bot ekanini biladi va foydalanuvchi har safar qayta
-      // tushuntirishi shart bo'lmaydi. `preset: 'claude_code'` standart
-      // xatti-harakatni saqlab qoladi — faqat ustiga qo'shiladi.
-      ...(description && description.trim()
-        ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: `Loyiha haqida kontekst:\n${description.trim()}` } }
-        : {}),
+      // SDK ataylab 'default'da qoldiriladi (faqat 'plan' istisno): shunda
+      // HAR BIR tool bizning `canUseTool`imizdan o'tadi va siyosat bitta
+      // joyda — `bashPolicy.js`da — hal qilinadi. Agar bu yerga 'acceptEdits'
+      // uzatilsa, SDK ba'zi toollarni biz ko'rmasdan o'zi tasdiqlab yuborardi,
+      // ya'ni ikkita haqiqat manbai paydo bo'lardi.
+      permissionMode: permissionMode === 'plan' ? 'plan' : 'default',
+      // Tizim promptiga qo'shimcha. `preset: 'claude_code'` standart
+      // xatti-harakatni (fayl-tizim xabardorligi, tool ishlatish uslubi va
+      // h.k.) saqlab qoladi — faqat ustiga qo'shiladi, almashtirmaydi.
+      //
+      // Ikki qism bor:
+      //  1) MULOQOT USLUBI — har doim qo'shiladi. Bu ilova telefondan,
+      //     dasturchi bo'lmagan odam tomonidan ishlatiladi. Terminaldagi
+      //     Claude Code jim ishlashi mumkin, bu yerda esa foydalanuvchi
+      //     faqat tool kartochkalarini ko'rib "nima bo'layapti?" degan
+      //     holatga tushadi. Shuning uchun izohlab borish TALAB qilinadi.
+      //  2) LOYIHA KONTEKSTI — "loyihalar" panelidagi `description`.
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        append: [
+          UI_STYLE_PROMPT,
+          // Bot suhbati bo'lsa — qaysi bot, papkadan chiqmaslik va
+          // OXIRGI-ISH.md ni yangilash ko'rsatmasi.
+          ...(botName ? [botPrompt(botName)] : []),
+          ...(description && description.trim() ? [`Loyiha haqida kontekst:\n${description.trim()}`] : []),
+        ].join('\n\n'),
+      },
       // Reattach to the same Claude session across a server restart (see
       // sessionsMeta above). Absent on a project's very first-ever session,
       // and self-healing (cleared below) if the saved id ever fails to
@@ -234,7 +337,10 @@ function createSession(projectId, cwd, description) {
           if (EDIT_TOOLS.has(toolName)) {
             return { behavior: 'allow', updatedInput: input };
           }
-          if (toolName === 'Bash' && !isDangerousBash(input && input.command)) {
+          // `isAutoApprovable` = allowlist VA denylist ikkalasidan ham o'tish
+          // (`bashPolicy.js`ga qara). Mos kelmasa rad etilmaydi — pastdagi
+          // ruxsat kartochkasi chiqariladi.
+          if (toolName === 'Bash' && isAutoApprovable(input && input.command)) {
             return { behavior: 'allow', updatedInput: input };
           }
         }
@@ -254,7 +360,7 @@ function createSession(projectId, cwd, description) {
           // Persisted here (in addition to every record()) so sdkSessionId
           // is captured immediately — if the process dies before the first
           // reply, a resume is still possible on the next boot.
-          persistSessionMeta(projectId, { sdkSessionId, cwd: cwdResolved, permissionMode, model: currentModel, history });
+          persistSessionMeta(projectId, { sdkSessionId, cwd: cwdResolved, permissionMode, history });
         }
         break;
       case 'assistant': {
@@ -278,7 +384,17 @@ function createSession(projectId, cwd, description) {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
-              emit({ type: 'tool_result', id: block.tool_use_id, isError: !!block.is_error });
+              // Avval bu yerda faqat `{id, isError}` yuborilardi — ya'ni tool
+              // chiqishi (masalan `pm2 logs`ning natijasi) klientga UMUMAN
+              // yetib bormasdi va foydalanuvchi faqat ✓ belgisini ko'rardi.
+              // Xom natijani ko'rish uchun Claude uni matn sifatida qayta
+              // yozib berishini kutish kerak edi: sekin, token sarflaydi va
+              // qisqartirilgan bo'lardi.
+              const output = extractToolOutput(block.content);
+              emitSplit(
+                { type: 'tool_result', id: block.tool_use_id, isError: !!block.is_error, ...clampOutput(output, LIVE_OUTPUT_MAX) },
+                { type: 'tool_result', id: block.tool_use_id, isError: !!block.is_error, ...clampOutput(output, HISTORY_OUTPUT_MAX) },
+              );
             }
           }
         }
@@ -286,61 +402,38 @@ function createSession(projectId, cwd, description) {
       }
       case 'result':
         busy = false;
+        // Har bir navbat uchun token hisobini audit-logga yozamiz.
+        //
+        // Nega: "oddiy vazifa uchun limitning 30% i ketdi" degan holatni
+        // TAXMIN bilan tushuntirib bo'lmaydi. Bu yerdagi eng muhim raqam —
+        // `cache_read` va `cache_creation` nisbati: Claude Code kontekstni
+        // keshlaydi va keshdan o'qish ancha arzon. Agar `cache_read` kichik
+        // bo'lib, `input` har safar katta chiqsa — kesh ishlamayapti va
+        // butun suhbat har bir xabarda to'liq narxda qayta hisoblanmoqda.
+        // Aynan shu "terminalda bunchalik emas" degan farqni tushuntiradi.
+        if (message.usage) {
+          const u = message.usage;
+          auditLog.log('turn_usage', {
+            projectId,
+            input: u.input_tokens || 0,
+            output: u.output_tokens || 0,
+            cacheRead: u.cache_read_input_tokens || 0,
+            cacheWrite: u.cache_creation_input_tokens || 0,
+            costUsd: typeof message.total_cost_usd === 'number' ? message.total_cost_usd : null,
+            turns: typeof message.num_turns === 'number' ? message.num_turns : null,
+            durationMs: typeof message.duration_ms === 'number' ? message.duration_ms : null,
+          });
+        }
         emit({
           type: 'result',
           isError: !!message.is_error,
           message: message.is_error ? (message.errors || []).join('; ') : undefined,
         });
-        if (message.usage || typeof message.total_cost_usd === 'number') {
-          if (message.usage) {
-            cumulativeInputTokens += message.usage.input_tokens || 0;
-            cumulativeOutputTokens += message.usage.output_tokens || 0;
-          }
-          if (typeof message.total_cost_usd === 'number') totalCostUsd = message.total_cost_usd;
-          emit({
-            type: 'usage_update',
-            inputTokens: cumulativeInputTokens,
-            outputTokens: cumulativeOutputTokens,
-            totalCostUsd,
-          });
-        }
         break;
       default:
         break;
     }
   }
-
-  // ---------------- 5-soatlik limit uchun avtomatik ogohlantirish ----------------
-  // Foydalanuvchi "limit" panelini qo'lda ochmasa ham, chatning o'zida ⚠️
-  // signal chiqadi — 80% va 90% bosqichlarida, har biri FAQAT BIR MARTA
-  // (spam bo'lmasligi uchun). Limit qayta tiklanganda (foiz sezilarli
-  // pastga tushganda, masalan yangi 5-soatlik oyna boshlanganda) holat
-  // avtomatik qayta tiklanadi, keyingi safar yana ogohlantirish beradi.
-  const RATE_LIMIT_WARN_TIERS = [
-    { pct: 90, message: "🔴 5 soatlik limit 90% dan oshdi — tez orada tugashi mumkin." },
-    { pct: 80, message: "⚠️ 5 soatlik limit 80% dan oshdi." },
-  ];
-  let lastWarnedPct = 0;
-
-  async function checkRateLimitWarning() {
-    try {
-      const data = await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
-      const fiveHour = data && data.rate_limits_available && data.rate_limits && data.rate_limits.five_hour;
-      if (!fiveHour || typeof fiveHour.utilization !== 'number') return;
-      const pct = fiveHour.utilization;
-      if (pct < lastWarnedPct - 15) lastWarnedPct = 0; // limit tiklangan (yangi oyna) — qayta ogohlantirishga tayyor
-      for (const tier of RATE_LIMIT_WARN_TIERS) {
-        if (pct >= tier.pct && lastWarnedPct < tier.pct) {
-          lastWarnedPct = tier.pct;
-          emit({ type: 'rate_limit_warning', message: tier.message, pct });
-          break;
-        }
-      }
-    } catch { /* eksperimental API — muvaffaqiyatsiz bo'lsa jim o'tkazib yuboriladi */ }
-  }
-
-  const rateLimitWarnTimer = setInterval(checkRateLimitWarning, 5 * 60 * 1000);
-  checkRateLimitWarning(); // sessiya boshlanishida ham darhol bir marta tekshirib qo'yish
 
   (async () => {
     try {
@@ -358,16 +451,15 @@ function createSession(projectId, cwd, description) {
       // same failure forever; the next getOrCreateSession() should start
       // clean instead of retrying a doomed resume.
       // Guard: only touch the map if IT STILL POINTS TO THIS SESSION.
-      // resetSession() can already have swapped in a brand-new session (with
-      // a brand-new `q`) for the same projectId before this catch ever runs
-      // (close() settling is async) — without this check we'd delete the map
-      // entry the new session just installed, orphaning it too.
+      // resetSession() below can already have swapped in a brand-new
+      // session (with a brand-new `q`) for the same projectId before this
+      // catch ever runs (q.close() settling is async) — without this check
+      // we'd delete the map entry the new session just installed, orphaning
+      // it too instead of the one that actually errored.
       if (sessions.get(projectId) === session) {
         sessions.delete(projectId);
         clearSessionMeta(projectId);
       }
-    } finally {
-      clearInterval(rateLimitWarnTimer);
     }
   })();
 
@@ -376,6 +468,9 @@ function createSession(projectId, cwd, description) {
     attach(ws) { clients.add(ws); },
     detach(ws) { clients.delete(ws); },
     pushUserMessage(text, images) {
+      // Faol suhbat "bo'sh turgan" deb hisoblanmasin — `getOrCreateSession`
+      // faqat ulanishda chaqiriladi, suhbat davomida emas.
+      touchSession(projectId);
       busy = true;
       // Only base64 image bytes go into the live SDK message — history just
       // remembers how many there were, so replay on reconnect stays cheap
@@ -417,23 +512,26 @@ function createSession(projectId, cwd, description) {
       resolver({ answers: answers || {}, response });
     },
     interrupt() { q.interrupt().catch(() => {}); },
-    // Fully ends the underlying Claude Agent SDK query (unlike interrupt(),
-    // which only stops the current turn and leaves the process alive for a
-    // future resume). Calling the AsyncGenerator's own return() runs the
-    // SDK's internal cleanup(), which closes the ProcessTransport and kills
-    // the child `claude` process (SIGTERM, then SIGKILL after a grace
-    // period) — see node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
-    // (ProcessTransport.close() / Query.return()). Used by resetSession()
-    // below: without this, "chatni tozalash" only forgot the session in our
-    // own `sessions` Map while the old child process kept running forever,
-    // orphaned and invisible, one per clear/reopen (found 2026-08-21 — 21
-    // such orphans had piled up across two projects, ~4.2GB RAM).
     // Full teardown (unlike interrupt(), which only stops the current turn
     // and leaves the session — and its CLI subprocess — alive): q.close()
     // forcefully ends the query and kills the underlying `claude` subprocess.
     // Used by resetSession() ("chatni tozalash") so the old process doesn't
     // linger forever as an orphan after the map entry is dropped.
     close() { try { q.close(); } catch { /* noop */ } },
+    // Bu sessiya almashtirilayotganini unga ulangan BOSHQA klientlarga
+    // bildiradi.
+    //
+    // Avval bu yo'q edi va quyidagi jimgina buzilish bor edi: telefonda
+    // "chatni tozalash" bosilsa (yoki loyiha o'chirilsa), kompyuterdagi ochiq
+    // tab hali ham `q.close()` qilingan ESKI sessiya obyektiga ishora qilib
+    // turardi. U yerdan yuborilgan xabar o'lik `messageQueue`ga tushib
+    // **yo'qolardi**, `busy` esa `true` bo'lib qotib qolardi — foydalanuvchi
+    // hech qanday xato ko'rmasdi, shunchaki Claude "javob bermayotgandek"
+    // tuyulardi.
+    invalidate() {
+      broadcast({ type: 'session_invalidated' });
+      clients.clear();
+    },
     // SDK'ning eksperimental "/usage" ma'lumoti — Claude ilovasidagi 5-soatlik
     // va haftalik limit foizini beradi. Nomi ham ogohlantirganidek beqaror
     // (o'zgarishi/olib tashlanishi mumkin) — shuning uchun try/catch bilan
@@ -453,15 +551,6 @@ function createSession(projectId, cwd, description) {
         emit({ type: 'permission_mode', mode });
       });
     },
-    // "Sonnet" ↔ "Opus" pill tugmasi — SDK'ning runtime `setModel()`i orqali,
-    // sessiyani qayta boshlamasdan (xuddi setPermissionMode kabi). Keyingi
-    // user-xabaridan boshlab yangi model ishlatiladi.
-    setModel(model) {
-      return q.setModel(model).then(() => {
-        currentModel = model;
-        emit({ type: 'model_changed', model });
-      });
-    },
     status() {
       return { busy, pending: pendingPermissions.size + pendingQuestions.size };
     },
@@ -471,8 +560,6 @@ function createSession(projectId, cwd, description) {
         sessionId: sdkSessionId,
         busy,
         permissionMode,
-        model: currentModel,
-        usage: { inputTokens: cumulativeInputTokens, outputTokens: cumulativeOutputTokens, totalCostUsd },
         // Drop permission/question requests that were already answered so a
         // reconnecting client doesn't see a stale, dead prompt.
         history: history.filter((e) =>
@@ -486,8 +573,77 @@ function createSession(projectId, cwd, description) {
   return session;
 }
 
-function getOrCreateSession(projectId, cwd, description) {
-  return sessions.get(projectId) || createSession(projectId, cwd, description);
+// ---------------- resurs cheklovi ----------------
+//
+// HAR BIR sessiya alohida `claude` subprocess — ~300-400 MB. VPS'da 26 ta
+// root bot + 8 ta sandbox bot allaqachon ~4.5 GB egallaydi, ya'ni bir necha
+// loyiha ochilganda OOM killer TASODIFIY jarayonni o'ldiradi: u PostgreSQL
+// yoki to'lov boti bo'lishi mumkin.
+//
+// Shuning uchun ikkita cheklov:
+//   1. bir vaqtda ochiq sessiyalar soni (`MAX_SESSIONS`)
+//   2. bo'sh turgan sessiya avtomatik yopiladi (`SESSION_IDLE_MINUTES`)
+//
+// Ikkalasida ham tarix DISKDA qoladi (`sessions_meta.json`) va `resume`
+// bilan tiklanadi — foydalanuvchi uchun suhbat yo'qolmaydi, faqat
+// subprocess xotiradan bo'shaydi.
+const lastUsedAt = new Map(); // projectId -> timestamp
+
+function touchSession(projectId) {
+  lastUsedAt.set(projectId, Date.now());
+}
+
+// Subprocessni yopadi, lekin diskdagi tarix va `sdkSessionId`ga TEGMAYDI —
+// `resetSession()` dan farqi shu (u suhbatni butunlay o'chiradi).
+//
+// ⚠️ ISH BAJARAYOTGAN sessiya hech qachon yopilmaydi: Claude o'rtada
+// to'xtab qolsa, foydalanuvchi ishi yo'qoladi va u buni tushunmaydi.
+function evictSession(projectId, reason) {
+  const session = sessions.get(projectId);
+  if (!session) return false;
+  const st = session.status();
+  if (st.busy || st.pending > 0) return false;
+  session.invalidate(); // ulangan klientlar qayta ulanadi va tarixni tiklaydi
+  session.close();
+  sessions.delete(projectId);
+  lastUsedAt.delete(projectId);
+  auditLog.log('session_evicted', { projectId, reason });
+  return true;
+}
+
+// Yangi sessiya ochishdan oldin joy bo'shatadi: eng uzoq ishlatilmaganidan
+// boshlab. Hammasi band bo'lsa cheklovdan oshamiz — foydalanuvchini
+// to'sib qo'ygandan ko'ra yaxshiroq, va systemd `MemoryMax` zaxira
+// to'siq bo'lib qoladi.
+function evictOldestIfNeeded() {
+  while (sessions.size >= config.MAX_SESSIONS) {
+    const candidates = [...sessions.keys()].sort(
+      (a, b) => (lastUsedAt.get(a) || 0) - (lastUsedAt.get(b) || 0),
+    );
+    const freed = candidates.some((id) => evictSession(id, 'limit'));
+    if (!freed) {
+      auditLog.log('session_limit_exceeded', { open: sessions.size, max: config.MAX_SESSIONS });
+      return;
+    }
+  }
+}
+
+// Bo'sh turgan sessiyalarni davriy tozalash.
+const IDLE_SWEEP_MS = 5 * 60 * 1000;
+const idleSweep = setInterval(() => {
+  const cutoff = Date.now() - config.SESSION_IDLE_MINUTES * 60 * 1000;
+  for (const id of [...sessions.keys()]) {
+    if ((lastUsedAt.get(id) || 0) < cutoff) evictSession(id, 'idle');
+  }
+}, IDLE_SWEEP_MS);
+if (idleSweep.unref) idleSweep.unref();
+
+function getOrCreateSession(projectId, cwd, description, botName) {
+  touchSession(projectId);
+  const existing = sessions.get(projectId);
+  if (existing) return existing;
+  evictOldestIfNeeded();
+  return createSession(projectId, cwd, description, botName);
 }
 
 // Drops the in-memory conversation AND its persisted sdkSessionId, so the
@@ -495,9 +651,19 @@ function getOrCreateSession(projectId, cwd, description) {
 // (empty history, no prior context, no resume) — used by the "chatni
 // tozalash" button. Must clear the disk pointer too, otherwise a restart
 // after "clear chat" would resurrect the very conversation just cleared.
+//
+// Uses close(), NOT interrupt(): interrupt() only stops the current turn and
+// leaves the session (and its `claude` CLI subprocess) alive — since we're
+// about to drop the map entry anyway, that process would become unreachable
+// but still running forever (an orphan holding ~300-400MB RAM until the
+// whole rootweb server restarts). close() actually kills the subprocess.
 function resetSession(projectId) {
   const session = sessions.get(projectId);
   if (session) {
+    // Avval xabar berib, keyin yopamiz — aks holda hali ulangan klientlar
+    // o'lik sessiyaga xabar yuborishda davom etadi (yuqoridagi `invalidate`
+    // izohiga qara).
+    session.invalidate();
     session.close();
     sessions.delete(projectId);
   }
@@ -516,4 +682,6 @@ function getStatus(projectId) {
   return session ? session.status() : { busy: false, pending: 0 };
 }
 
-module.exports = { getOrCreateSession, getStatus, resetSession };
+// `extractToolOutput`/`clampOutput` test uchun ham eksport qilinadi
+// (`test/toolOutput.test.js`) — ular tool natijasi ko'rsatilishining asosi.
+module.exports = { getOrCreateSession, getStatus, resetSession, extractToolOutput, clampOutput };

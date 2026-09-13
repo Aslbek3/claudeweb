@@ -1,5 +1,42 @@
 (() => {
+  // Ustma-ust oynalar steki va dialoglar `ui-core.js`da (`window.RW`) —
+  // "orqaga" tugmasi / Escape boshqaruvi shu yerdan keladi.
+  const { openOverlay, requestCloseOverlay, confirmDialog, promptDialog } = window.RW;
+
   const messagesEl = document.getElementById('messages');
+  const jumpBottomBtn = document.getElementById('jumpBottomBtn');
+  const enterModeBtn = document.getElementById('enterModeBtn');
+  const quickCmdsBtn = document.getElementById('quickCmdsBtn');
+  const quickCmdsEl = document.getElementById('quickCmds');
+  const projectSwitcher = document.getElementById('projectSwitcher');
+  const searchBtn = document.getElementById('searchBtn');
+  const searchBar = document.getElementById('searchBar');
+  const searchInput = document.getElementById('searchInput');
+  const searchCount = document.getElementById('searchCount');
+  const searchPrev = document.getElementById('searchPrev');
+  const searchNext = document.getElementById('searchNext');
+  const searchClose = document.getElementById('searchClose');
+  const panelStatus = document.getElementById('panelStatus');
+  const statusBody = document.getElementById('statusBody');
+  const emergencyBox = document.getElementById('emergencyBox');
+  const unbanForm = document.getElementById('unbanForm');
+  const unbanIpInput = document.getElementById('unbanIp');
+  const allowSshBtn = document.getElementById('allowSshBtn');
+  const bannedList = document.getElementById('bannedList');
+  const devicesTab = document.getElementById('devicesTab');
+  const panelDevices = document.getElementById('panelDevices');
+  const thisDeviceList = document.getElementById('thisDeviceList');
+  const addDeviceForm = document.getElementById('addDeviceForm');
+  const newDeviceNameInput = document.getElementById('newDeviceName');
+  const newDeviceUrlInput = document.getElementById('newDeviceUrl');
+  const deviceListEl = document.getElementById('deviceList');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const settingsSheet = document.getElementById('settingsSheet');
+  const settingsOverlay = document.getElementById('settingsOverlay');
+  const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+  const themeValue = document.getElementById('themeValue');
+  const notifyValue = document.getElementById('notifyValue');
+  const notifyGroup = document.getElementById('notifyGroup');
   const form = document.getElementById('composer');
   const input = document.getElementById('input');
   const sendBtn = document.getElementById('sendBtn');
@@ -9,7 +46,6 @@
   const logoutBtn = document.getElementById('logoutBtn');
   const clearChatBtn = document.getElementById('clearChatBtn');
   const modeBtn = document.getElementById('modeBtn');
-  const modelBtn = document.getElementById('modelBtn');
 
   const themeBtn = document.getElementById('themeBtn');
   const notifyBtn = document.getElementById('notifyBtn');
@@ -24,15 +60,7 @@
   const panelBots = document.getElementById('panelBots');
   const botListEl = document.getElementById('botList');
   const pm2StatusBadge = document.getElementById('pm2StatusBadge');
-  const panelLimit = document.getElementById('panelLimit');
   const rateLimitStats = document.getElementById('rateLimitStats');
-  const usageStats = document.getElementById('usageStats');
-  const panelDevices = document.getElementById('panelDevices');
-  const thisDeviceList = document.getElementById('thisDeviceList');
-  const addDeviceForm = document.getElementById('addDeviceForm');
-  const newDeviceNameInput = document.getElementById('newDeviceName');
-  const newDeviceUrlInput = document.getElementById('newDeviceUrl');
-  const deviceListEl = document.getElementById('deviceList');
   const addProjectForm = document.getElementById('addProjectForm');
   const newProjectPathInput = document.getElementById('newProjectPath');
   const newProjectToggle = document.getElementById('newProjectToggle');
@@ -45,6 +73,7 @@
   const newProjectNameInput = document.getElementById('newProjectName');
   const projectListEl = document.getElementById('projectList');
   const fileBreadcrumbEl = document.getElementById('fileBreadcrumb');
+  const gotoRootBtn = document.getElementById('gotoRootBtn');
   const fileTreeEl = document.getElementById('fileTree');
   const newFolderToggle = document.getElementById('newFolderToggle');
   const createFolderForm = document.getElementById('createFolderForm');
@@ -76,28 +105,193 @@
   let reconnectDelay = 1000;
   let typingEl = null;
   let projectsList = [];
+  let devicesList = [];
   let activeProjectId = null;
   let currentDir = '.';
+  // Non-null while browsing an absolute path outside the active loyiha/project
+  // (e.g. via gotoRootBtn's "/root'ga o'tish"). Kept independent of
+  // activeProjectId so jumping there never sends switch_project (Claude's
+  // active conversation/session stays untouched).
   let browseRoot = null;
   let lastCwd = '';
   let isSwitching = false;
   let prevPending = new Map();
-  let devicesList = [];
   let currentFilePath = null;
   let currentFileEditable = false;
 
-  function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+  // ---------------- skroll boshqaruvi ----------------
+  // Avval `scrollToBottom()` har bir xabarda SHARTSIZ chaqirilardi: Claude
+  // yozayotganda yuqoriga chiqib biror narsani o'qimoqchi bo'lsangiz, keyingi
+  // blok sizni pastga tortib tushirardi. Endi avtomatik skroll faqat
+  // foydalanuvchi allaqachon pastda bo'lsa ishlaydi; aks holda pastda "↓"
+  // tugmasi paydo bo'ladi.
+  const STICK_THRESHOLD_PX = 80;
+  let stickToBottom = true;
+
+  function distanceFromBottom() {
+    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
   }
 
+  function updateJumpButton() {
+    if (!jumpBottomBtn) return;
+    jumpBottomBtn.classList.toggle('hidden', stickToBottom);
+  }
+
+  messagesEl.addEventListener('scroll', () => {
+    stickToBottom = distanceFromBottom() < STICK_THRESHOLD_PX;
+    if (stickToBottom) jumpBottomBtn.classList.remove('unread');
+    updateJumpButton();
+  });
+
+  // `force` — foydalanuvchining o'z amali (xabar yuborish, loyiha almashish,
+  // tarixni qayta chizish) uchun: bunda skroll har doim pastga tushadi.
+  function scrollToBottom(force) {
+    if (force) {
+      stickToBottom = true;
+      jumpBottomBtn.classList.remove('unread');
+    }
+    if (!stickToBottom) {
+      // Pastda emasmiz — yangi xabar kelganini "↓" tugmasida belgilaymiz.
+      jumpBottomBtn.classList.add('unread');
+      updateJumpButton();
+      return;
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    updateJumpButton();
+  }
+
+  if (jumpBottomBtn) {
+    jumpBottomBtn.addEventListener('click', () => {
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+      stickToBottom = true;
+      jumpBottomBtn.classList.remove('unread');
+      updateJumpButton();
+    });
+  }
+
+  // ---------------- nusxa olish ----------------
+  // Telefonda `<pre>` ichidan matn belgilash juda noqulay, holbuki Claude
+  // bergan buyruqni nusxalash — bu ilovadagi eng tez-tez qilinadigan
+  // amallardan biri.
+  async function copyText(text, btn) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Eski brauzer yoki ruxsat berilmagan holat uchun zaxira usul.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* qo'lda nusxalash qoladi */ }
+      ta.remove();
+    }
+    if (btn) {
+      btn.classList.add('copied');
+      btn.setAttribute('aria-label', 'Nusxalandi');
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.setAttribute('aria-label', 'Nusxa olish');
+      }, 1400);
+    }
+  }
+
+  const COPY_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>'
+    + '<svg class="copy-done" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+
+  function makeCopyBtn(getText) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.setAttribute('aria-label', 'Nusxa olish');
+    btn.title = 'Nusxa olish';
+    btn.innerHTML = COPY_SVG;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyText(getText(), btn);
+    });
+    return btn;
+  }
+
+  // Xabar ichidagi har bir kod blokiga nusxa tugmasini qo'shadi.
+  function attachCodeCopyButtons(container) {
+    for (const pre of container.querySelectorAll('pre')) {
+      if (pre.querySelector('.copy-btn')) continue;
+      pre.classList.add('has-copy');
+      pre.appendChild(makeCopyBtn(() => pre.querySelector('code')?.textContent || pre.textContent));
+    }
+  }
+
+  // ⚠️ Qo'shtirnoqlar ham escape qilinadi. Avval faqat `& < >` almashtirilardi,
+  // lekin funksiya ba'zi joyda ATRIBUT ichida ishlatilardi (masalan
+  // `alt="${escapeHtml(att.name)}"`) — u yerda `"` atributdan chiqib ketib
+  // XSS'ga yo'l ochardi. Matn konteksti uchun mo'ljallangan funksiyani atribut
+  // kontekstida ishlatish — sinf darajasidagi xato, shuning uchun funksiyaning
+  // o'zi ham to'liq qilindi.
   function escapeHtml(str) {
-    return str
+    return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
-  // Minimal markdown: fenced code blocks, inline code, bold, italic, paragraphs.
+  // Minimal markdown: kod bloklari, inline kod, qalin, kursiv, sarlavhalar,
+  // ro'yxatlar, xatboshi.
+  //
+  // Sarlavha (`## ...`) va ro'yxat (`- ...`) qo'llab-quvvatlanmagani uchun
+  // Claude javoblarining katta qismi xom markdown bo'lib ko'rinardi; izohda
+  // esa "italic" deyilgan bo'lsa-da, u ham amalga oshirilmagan edi.
+  function renderInline(seg) {
+    return seg
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      // Kursiv — `**qalin**`dan keyin qo'llanadi, shunda ular to'qnashmaydi.
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  }
+
+  // Bitta blokni (kod bloklari orasidagi matnni) HTML'ga aylantiradi.
+  function renderBlock(text) {
+    const lines = text.split('\n');
+    let html = '';
+    let listOpen = false;
+    let paragraph = [];
+
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      html += `<p>${renderInline(paragraph.join('<br>'))}</p>`;
+      paragraph = [];
+    };
+    const closeList = () => {
+      if (listOpen) { html += '</ul>'; listOpen = false; }
+    };
+
+    for (const line of lines) {
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (heading) {
+        flushParagraph(); closeList();
+        const level = Math.min(6, heading[1].length + 2); // ## -> h4, kichikroq ko'rinsin
+        html += `<h${level}>${renderInline(heading[2])}</h${level}>`;
+      } else if (bullet) {
+        flushParagraph();
+        if (!listOpen) { html += '<ul>'; listOpen = true; }
+        html += `<li>${renderInline(bullet[1])}</li>`;
+      } else if (!line.trim()) {
+        flushParagraph(); closeList();
+      } else {
+        closeList();
+        paragraph.push(line);
+      }
+    }
+    flushParagraph();
+    closeList();
+    return html;
+  }
+
   function renderMarkdown(raw) {
     const text = escapeHtml(raw);
     const parts = text.split(/```([\s\S]*?)```/g);
@@ -111,12 +305,7 @@
         }
         html += `<pre><code>${block}</code></pre>`;
       } else {
-        let seg = parts[i]
-          .replace(/`([^`]+)`/g, '<code>$1</code>')
-          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-          .replace(/\n{2,}/g, '</p><p>')
-          .replace(/\n/g, '<br>');
-        html += `<p>${seg}</p>`;
+        html += renderBlock(parts[i]);
       }
     }
     return html;
@@ -127,7 +316,7 @@
     wrap.className = `line ${role}`;
     const marker = document.createElement('span');
     marker.className = 'marker';
-    marker.textContent = role === 'user' ? '' : '✳';
+    marker.textContent = role === 'user' ? '❯' : '·';
     const content = document.createElement('div');
     content.className = 'line-content';
     if (attachments && attachments.length) {
@@ -150,6 +339,7 @@
     }
     const textEl = document.createElement('div');
     textEl.innerHTML = renderMarkdown(text);
+    attachCodeCopyButtons(textEl);
     content.appendChild(textEl);
     wrap.appendChild(marker);
     wrap.appendChild(content);
@@ -177,9 +367,30 @@
     Glob: 'GLOB', WebFetch: 'WEB', WebSearch: 'SEARCH', Task: 'TASK', TodoWrite: 'TODO'
   };
 
+  // Tool kartochkasining sarlavhasi.
+  //
+  // ⚠️ Bash uchun avval `description || command` edi — ya'ni Claude izoh
+  // bermasa XOM BUYRUQ sarlavhaga tushardi. Qisqa buyruq uchun bu yaxshi
+  // ("pm2 restart poster-01 ..." — o'qiladi), lekin ko'p qatorli skript
+  // (python heredoc, uzun quvur) bitta qatorga siqilib, o'qib bo'lmaydigan
+  // belgi devoriga aylanardi.
+  //
+  // Endi tartib: Claude'ning izohi -> qisqa bir qatorli buyruq -> oddiy
+  // o'zbekcha tavsif (`explainBash`). Xom kod hech qachon sarlavhaga
+  // tushmaydi — u kartochka ichida "buyruq" bo'limida ochiladi.
+  const INLINE_CMD_MAX = 60;
+
+  function bashLabel(input) {
+    if (input.description) return input.description;
+    const cmd = (input.command || '').trim();
+    if (!cmd) return "Terminal buyrug'i";
+    if (!cmd.includes('\n') && cmd.length <= INLINE_CMD_MAX) return cmd;
+    return explainBash(cmd).title;
+  }
+
   function toolSummary(name, input) {
     input = input || {};
-    if (name === 'Bash' || name === 'PowerShell') return input.description || input.command || '';
+    if (name === 'Bash' || name === 'PowerShell') return bashLabel(input);
     if (name === 'Read' || name === 'Write' || name === 'Edit') return input.file_path || '';
     if (name === 'Grep') return input.pattern || '';
     if (name === 'Glob') return input.pattern || '';
@@ -194,20 +405,93 @@
     card.dataset.toolId = id;
     const tag = TOOL_TAGS[name] || name.toUpperCase();
     const summary = toolSummary(name, input);
-    card.innerHTML = `<span class="tool-tag">[${escapeHtml(tag)}]</span><span class="tool-summary"></span><span class="tool-status"></span>`;
+    card.innerHTML = `<div class="tool-head"><span class="tool-tag">[${escapeHtml(tag)}]</span><span class="tool-summary"></span><span class="tool-status"></span></div>`;
+    const head = card.querySelector('.tool-head');
     card.querySelector('.tool-summary').textContent = summary;
+
+    // Xom buyruq sarlavhada ko'rinmaydi, lekin kerak bo'lganda ochiladi.
+    // Sarlavhada u ko'rsatilganda (qisqa, bir qatorli) takrorlash shart emas.
+    const rawCmd = (name === 'Bash' || name === 'PowerShell') ? (input.command || '').trim() : '';
+    if (rawCmd && rawCmd !== summary) {
+      const cmdToggle = document.createElement('button');
+      cmdToggle.type = 'button';
+      cmdToggle.className = 'tool-toggle';
+      cmdToggle.textContent = 'buyruq';
+      cmdToggle.setAttribute('aria-expanded', 'false');
+
+      const cmdWrap = document.createElement('div');
+      cmdWrap.className = 'tool-output tool-cmd hidden';
+      const pre = document.createElement('pre');
+      pre.textContent = rawCmd;
+      cmdWrap.appendChild(pre);
+      cmdWrap.appendChild(makeCopyBtn(() => rawCmd));
+
+      cmdToggle.addEventListener('click', () => {
+        const willShow = cmdWrap.classList.contains('hidden');
+        cmdWrap.classList.toggle('hidden', !willShow);
+        cmdToggle.setAttribute('aria-expanded', String(willShow));
+        cmdToggle.classList.toggle('open', willShow);
+      });
+      head.appendChild(cmdToggle);
+      card.appendChild(cmdWrap);
+    }
+
+    // Nusxa olish — xom buyruq bo'lsa o'sha, aks holda sarlavha.
+    if (rawCmd || summary) head.appendChild(makeCopyBtn(() => rawCmd || summary));
     messagesEl.appendChild(card);
     scrollToBottom();
     return card;
   }
 
-  function markToolResult(id, isError) {
+  // Tool natijasi kelganda kartochkani belgilaydi VA chiqish bo'lsa uni
+  // ochib-yopiladigan blok sifatida qo'shadi. Avval bu yerda faqat ✓/✗
+  // qo'yilardi — xom chiqish klientga umuman kelmasdi.
+  function markToolResult(id, isError, output, truncated, fullLength) {
     const card = messagesEl.querySelector(`.tool-card[data-tool-id="${CSS.escape(id)}"]`);
-    if (card) {
-      card.classList.add(isError ? 'error' : 'ok');
-      const statusEl = card.querySelector('.tool-status');
-      if (statusEl) statusEl.textContent = isError ? '✗' : '✓';
+    if (!card) return;
+    card.classList.add(isError ? 'error' : 'ok');
+    const statusEl = card.querySelector('.tool-status');
+    if (statusEl) statusEl.textContent = isError ? '✗' : '✓';
+    // ⚠️ `.tool-result` bo'yicha tekshiramiz, `.tool-output` bo'yicha emas:
+    // buyruq bloki ham `.tool-output` uslubini ishlatadi va umumiy tekshiruv
+    // natija blokini qo'shishga to'sqinlik qilardi.
+    if (!output || card.querySelector('.tool-output.tool-result')) return;
+
+    card.classList.add('expandable');
+    const head = card.querySelector('.tool-head');
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'tool-toggle';
+    const lineCount = output.split('\n').length;
+    toggle.textContent = `natija (${lineCount} qator)`;
+    toggle.setAttribute('aria-expanded', 'false');
+
+    const outWrap = document.createElement('div');
+    outWrap.className = 'tool-output tool-result hidden';
+    const pre = document.createElement('pre');
+    pre.textContent = output;
+    outWrap.appendChild(pre);
+    if (truncated) {
+      const note = document.createElement('div');
+      note.className = 'tool-output-note';
+      note.textContent = fullLength
+        ? `Chiqish qisqartirildi (to'liq hajmi ${fullLength.toLocaleString('uz-UZ')} belgi)`
+        : 'Chiqish qisqartirildi';
+      outWrap.appendChild(note);
     }
+    outWrap.appendChild(makeCopyBtn(() => output));
+
+    toggle.addEventListener('click', () => {
+      const willShow = outWrap.classList.contains('hidden');
+      outWrap.classList.toggle('hidden', !willShow);
+      toggle.setAttribute('aria-expanded', String(willShow));
+      toggle.classList.toggle('open', willShow);
+      if (willShow) scrollToBottom();
+    });
+
+    head.appendChild(toggle);
+    card.appendChild(outWrap);
   }
 
   // Ruxsat so'rovini texnik bo'lmagan odam ham tushunadigan qisqa jumlaga
@@ -218,7 +502,14 @@
     switch (name) {
       case 'Bash':
       case 'PowerShell':
-        return `Terminal buyrug'i ishga tushiriladi: ${input.command || input.description || '(noma\'lum)'}`;
+        // ⚠️ Avval bu yerda XOM BUYRUQ qaytarilardi
+        // ("Terminal buyrug'i ishga tushiriladi: cd /x && git log --oneline...").
+        // Dasturlashni bilmaydigan odam uchun bu hech narsa anglatmasdi, va
+        // eng yomoni — kartochkaning eng ko'zga tashlanadigan joyini
+        // egallardi, Claude'ning o'z tushuntirishi esa pastda, mayda
+        // shriftda qolardi. Endi tushuntirish `explainBash()`dan keladi,
+        // xom buyruq esa "texnik tafsilot" ostiga tushadi.
+        return explainBash(input.command || '').title;
       case 'Edit': {
         const fname = (input.file_path || '').split(/[\\/]/).pop() || input.file_path || 'fayl';
         return `"${fname}" faylida o'zgartirish kiritiladi`;
@@ -237,6 +528,11 @@
         return null;
     }
   }
+
+  // `explainBash` va `RISK_LABEL` — `bash-explain.js` modulida
+  // (DOM'ga bog'liq emas, shuning uchun test bilan qoplangan:
+  // `test/bashExplain.test.js`).
+  const { explainBash, RISK_LABEL } = window.RW;
 
   // Oddiy, kutubxonasiz qatorma-qator diff (Edit tool uchun old_string/
   // new_string). Katta o'zgarishlarda to'liq algoritm emas — faqat
@@ -261,52 +557,84 @@
     return wrap;
   }
 
+  // Ruxsat kartochkasi — dasturlashni bilmaydigan odam uchun qayta qurildi.
+  //
+  // Avvalgi tartib teskari edi: eng ko'zga tashlanadigan qatorda XOM BUYRUQ
+  // turardi (`cd /x && git log --oneline -10 2>/dev/null; echo "==="...`),
+  // Claude'ning o'z tushuntirishi esa pastda, mayda mono shriftda qolardi.
+  // Natijada "nimaga ruxsat berayotganimni bilmay qoldim" degan holat.
+  //
+  // Yangi tartib:
+  //   1) xavf darajasi (rangli yorliq) — "faqat o'qiydi" / "xavfli" ...
+  //   2) oddiy o'zbekcha tushuntirish  — `explainBash()`dan
+  //   3) Claude nima demoqchi bo'lgani — tool'ning o'z `description`i
+  //   4) xom buyruq — yopiq holda, "texnik tafsilot" ostida
   function addPermissionCard(reqId, name, input) {
+    input = input || {};
     const card = document.createElement('div');
-    card.className = 'permission-card';
-    const summary = toolSummary(name, input) || '';
-    const friendly = describeToolCall(name, input);
-    const PREVIEW_LEN = 70;
-    const isLong = summary.length > PREVIEW_LEN;
-    const short = isLong ? summary.slice(0, PREVIEW_LEN) + '…' : summary;
+    const isBash = name === 'Bash' || name === 'PowerShell';
+    const rawCommand = isBash ? (input.command || '') : (toolSummary(name, input) || '');
+    const explained = isBash ? explainBash(rawCommand) : { risk: null, title: describeToolCall(name, input) };
+    // Fayl yozish/tahrirlash uchun xavf darajasini o'zimiz belgilaymiz.
+    const risk = explained.risk
+      || (name === 'Write' || name === 'Edit' || name === 'NotebookEdit' ? 'write' : 'unknown');
+    card.className = `permission-card risk-${risk}`;
+
     card.innerHTML = `
       <div class="ptitle">ruxsat kerak <span class="ptag">[${escapeHtml(name)}]</span></div>
-      ${friendly ? `<div class="pfriendly"></div>` : ''}
-      <div class="pcmd-preview"><code>${escapeHtml(short)}</code></div>
-      ${isLong ? `<button type="button" class="pcmd-toggle">to'liq ko'rish</button>
-      <pre class="pcmd-full hidden"><code>${escapeHtml(summary).slice(0, 2000)}</code></pre>` : ''}
+      <div class="prisk"><span class="prisk-dot"></span><span class="prisk-text"></span></div>
+      <div class="pfriendly"></div>
+      <div class="pintent hidden"><span class="pintent-label">Claude nima qilmoqchi:</span> <span class="pintent-text"></span></div>
+      <button type="button" class="pcmd-toggle">texnik tafsilot</button>
+      <div class="pcmd-full hidden"><pre><code></code></pre></div>
       <div class="permission-diff-slot"></div>
       <div class="permission-actions">
         <button class="allow">Ruxsat berish</button>
         <button class="deny">Rad etish</button>
       </div>`;
-    if (friendly) card.querySelector('.pfriendly').textContent = friendly;
-    if (name === 'Edit' && input && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
-      card.querySelector('.permission-diff-slot').appendChild(renderLineDiff(input.old_string, input.new_string));
+
+    card.querySelector('.prisk-text').textContent = RISK_LABEL[risk] || RISK_LABEL.unknown;
+    card.querySelector('.pfriendly').textContent = explained.title || 'Amal bajariladi';
+
+    // Claude o'z `description`ini bergan bo'lsa uni ham ko'rsatamiz — u
+    // ko'pincha kontekstni aniqroq aytadi ("Show git log of rootweb").
+    if (isBash && input.description) {
+      const intent = card.querySelector('.pintent');
+      intent.classList.remove('hidden');
+      intent.querySelector('.pintent-text').textContent = input.description;
     }
-    if (isLong) {
-      const toggle = card.querySelector('.pcmd-toggle');
-      const preview = card.querySelector('.pcmd-preview');
-      const full = card.querySelector('.pcmd-full');
+
+    // Xom buyruq — yopiq holda. Nusxa olish tugmasi ham shu yerda.
+    const full = card.querySelector('.pcmd-full');
+    const toggle = card.querySelector('.pcmd-toggle');
+    if (rawCommand) {
+      full.querySelector('code').textContent = rawCommand.slice(0, 4000);
+      full.appendChild(makeCopyBtn(() => rawCommand));
       toggle.addEventListener('click', () => {
         const willShow = full.classList.contains('hidden');
-        full.classList.toggle('hidden');
-        preview.classList.toggle('hidden', willShow);
-        toggle.textContent = willShow ? 'yashirish' : 'to\'liq ko\'rish';
+        full.classList.toggle('hidden', !willShow);
+        toggle.textContent = willShow ? 'yashirish' : 'texnik tafsilot';
+        toggle.classList.toggle('open', willShow);
       });
+    } else {
+      toggle.remove();
+      full.remove();
     }
-    const allowBtn = card.querySelector('.allow');
-    const denyBtn = card.querySelector('.deny');
+
+    if (name === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+      card.querySelector('.permission-diff-slot').appendChild(renderLineDiff(input.old_string, input.new_string));
+    }
+
     const respond = (approve) => {
       send({ type: 'permission', id: reqId, approve });
       const resolved = document.createElement('div');
       resolved.className = 'permission-resolved ' + (approve ? 'ok' : 'deny');
       resolved.innerHTML = `<span class="permission-resolved-icon">${approve ? '✓' : '✗'}</span><span class="tool-tag">[${escapeHtml(name)}]</span><span class="permission-resolved-text"></span>`;
-      resolved.querySelector('.permission-resolved-text').textContent = short;
+      resolved.querySelector('.permission-resolved-text').textContent = explained.title || rawCommand.slice(0, 70);
       card.replaceWith(resolved);
     };
-    allowBtn.addEventListener('click', () => respond(true));
-    denyBtn.addEventListener('click', () => respond(false));
+    card.querySelector('.allow').addEventListener('click', () => respond(true));
+    card.querySelector('.deny').addEventListener('click', () => respond(false));
     messagesEl.appendChild(card);
     scrollToBottom();
   }
@@ -399,7 +727,7 @@
     if (typingEl) return;
     typingEl = document.createElement('div');
     typingEl.className = 'typing';
-    typingEl.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+    typingEl.innerHTML = '<span class="dim">generating</span><span class="cursor-blink">▋</span>';
     messagesEl.appendChild(typingEl);
     scrollToBottom();
   }
@@ -410,8 +738,15 @@
 
   function setBusy(v) {
     busy = v;
-    sendBtn.style.display = v ? 'none' : 'flex';
+    // Yuborish tugmasi band holatda ham KO'RINADI. Avval u yashirilardi va
+    // `submit` handleri ham `if (busy) return` bilan to'sib turardi — ya'ni
+    // Claude ishlayotganda unga qo'shimcha ko'rsatma yozib bo'lmasdi.
+    // Terminaldagi Claude Code'da esa bu mumkin: yozgan xabaringiz navbatga
+    // tushadi va joriy navbat tugagach uzatiladi. Server tomonida navbat
+    // (`messageQueue`) allaqachon bor edi — faqat interfeys to'sib turardi.
+    sendBtn.style.display = 'flex';
     stopBtn.style.display = v ? 'flex' : 'none';
+    input.placeholder = v ? "Qo'shimcha ko'rsatma yozing (navbatga tushadi)..." : 'Xabar yozing...';
     statusDot.className = 'status-dot ' + (v ? 'working' : (ws && ws.readyState === 1 ? 'connected' : ''));
     if (v) showTyping(); else hideTyping();
   }
@@ -451,14 +786,18 @@
         lastCwd = msg.cwd || '';
         syncActiveProjectFromCwd(msg.cwd);
         setActiveMode(msg.permissionMode || 'default');
-        setActiveModel(msg.model || 'sonnet');
-        setUsage(msg.usage);
         activeProjectPm2Name = msg.pm2Name || null;
         if (activeProjectPm2Name) loadBotList(); else pm2StatusBadge.classList.add('hidden');
         messagesEl.innerHTML = '';
+        // DOM tozalandi — navbat kuzatuvi ham nolga tushadi, aks holda
+        // mavjud bo'lmagan elementlarga ishora qilib qolardi.
+        queuedIds.length = 0;
         hideTyping();
         for (const evt of msg.history || []) handleMessage(evt, true);
         setBusy(!!msg.busy);
+        // Tarix qayta chizilgandan keyin har doim pastga tushamiz — bu
+        // foydalanuvchining o'z amali (ulanish/loyiha almashish) natijasi.
+        scrollToBottom(true);
         if (isSwitching) {
           addSystemNote("Loyiha almashtirildi: " + (msg.cwd || ''));
           isSwitching = false;
@@ -479,7 +818,7 @@
         addToolCard(msg.id, msg.name, msg.input);
         break;
       case 'tool_result':
-        markToolResult(msg.id, msg.isError);
+        markToolResult(msg.id, msg.isError, msg.output, msg.truncated, msg.fullLength);
         break;
       case 'permission_request':
         hideTyping();
@@ -499,37 +838,40 @@
       case 'permission_mode':
         setActiveMode(msg.mode);
         break;
-      case 'model_changed':
-        setActiveModel(msg.model);
-        addSystemNote(`Model almashtirildi: ${MODEL_LABEL[msg.model] || msg.model}`);
-        break;
       case 'busy':
         setBusy(!!msg.value);
         break;
-      case 'result':
-        setBusy(false);
+      case 'result': {
+        // Bitta navbat tugadi. Navbatda kutayotgan xabar bo'lsa — endi
+        // uning navbati keldi, ya'ni ish DAVOM etadi va "band" holatini
+        // saqlab qolamiz. Aks holda ish tugadi.
+        const stillWorking = releaseOldestQueued();
+        setBusy(stillWorking);
         if (msg.isError) addSystemNote('⚠️ ' + (msg.message || 'Xatolik yuz berdi'));
-        if (!isReplay && document.hidden) {
+        if (!isReplay && document.hidden && !stillWorking) {
           notify('Claude tugatdi', msg.isError ? (msg.message || 'Xatolik yuz berdi') : 'Vazifa yakunlandi');
         }
         break;
-      case 'usage_update':
-        setUsage({ inputTokens: msg.inputTokens, outputTokens: msg.outputTokens, totalCostUsd: msg.totalCostUsd });
-        break;
+      }
       case 'rate_limit_data':
         rateLimitState = msg.data;
         rateLimitLoaded = true;
-        if (!panelLimit.classList.contains('hidden')) renderRateLimits();
-        break;
-      case 'rate_limit_warning':
-        addSystemNote(msg.message);
-        if (!isReplay && document.hidden) {
-          notify('Limit ogohlantirishi', msg.message);
-        }
+        // Limit endi sozlamalar panelida ko'rsatiladi (drawer'dagi tabda emas)
+        if (settingsSheet.classList.contains('open')) renderRateLimits();
         break;
       case 'error':
         setBusy(false);
         addSystemNote('⚠️ ' + msg.message);
+        break;
+      // Sessiya boshqa qurilmada tozalandi/o'chirildi. Avval bu xabar umuman
+      // yo'q edi va bu tab o'lik sessiyaga bog'lanib qolardi: yuborilgan
+      // xabarlar jimgina yo'qolar, "band" holati esa abadiy qotib qolardi.
+      // Ulanishni yopamiz — mavjud avtomatik qayta ulanish (`close` handleri)
+      // darhol yangi, to'g'ri holatni olib keladi.
+      case 'session_invalidated':
+        addSystemNote('Suhbat boshqa qurilmada tozalandi — qayta ulanmoqda…');
+        setBusy(false);
+        try { ws.close(); } catch { /* allaqachon yopilgan bo'lishi mumkin */ }
         break;
       case 'auth_error':
         window.location.href = '/login.html';
@@ -539,7 +881,10 @@
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (busy) return;
+    // ⚠️ `if (busy) return` OLIB TASHLANDI. Claude ishlayotgan paytda ham
+    // xabar yuborish mumkin — u navbatga tushadi va joriy navbat tugagach
+    // uzatiladi (terminaldagi Claude Code kabi). Bu qo'shimcha ko'rsatma
+    // berish uchun kerak: "yo'q, u faylga tegma", "avval testni ishga tushir".
     const text = input.value.trim();
     if (!text && pendingAttachments.length === 0) return;
     if (pendingAttachments.some((a) => a.uploading)) {
@@ -552,8 +897,14 @@
     if (fileNames.length) {
       outgoingText += (text ? '\n\n' : '') + `[Ilova qilingan fayllar: ${fileNames.join(', ')}]`;
     }
-    addBubble('user', text || '(ilova)', pendingAttachments);
-    send({ type: 'chat', text: outgoingText, images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) });
+
+    const msgId = `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const content = addBubble('user', text || '(ilova)', pendingAttachments);
+    // Band bo'lsa xabar darhol uzatilmaydi — buni ochiq ko'rsatamiz, aks
+    // holda foydalanuvchi "yubordimmi yo'qmi?" deb qoladi.
+    if (busy) markQueued(content, msgId);
+    scrollToBottom(true); // o'z xabaringizni yuborganda har doim pastga
+    send({ type: 'chat', id: msgId, text: outgoingText, images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) });
     input.value = '';
     input.style.height = 'auto';
     pendingAttachments = [];
@@ -561,8 +912,79 @@
     setBusy(true);
   });
 
+  // ---------------- navbatdagi xabarlar ----------------
+  //
+  // Claude ishlayotgan paytda yuborilgan xabar darhol ishlanmaydi — joriy
+  // navbat tugagach navbati keladi. Buni ochiq ko'rsatmasak foydalanuvchi
+  // "yubordimmi yo'qmi?" deb qoladi.
+  //
+  // ⚠️ Navbat holatini SERVERDAN so'rash urinib ko'rilgan va tashlangan:
+  // SDK xabarni oqimdan deyarli darhol o'z buferiga oladi (Claude uni
+  // qachon ishlashidan qat'i nazar), ya'ni server "uzatildi" deb noto'g'ri
+  // aytardi — sinovda `ikkinchi` xabar navbatda turgani holda "uzatildi"
+  // deb belgilangan edi. Shuning uchun holat KLIENTDA, `result` (navbat
+  // tugashi) chegarasi bo'yicha kuzatiladi.
+  const queuedIds = [];
+
+  function markQueued(contentEl, msgId) {
+    const line = contentEl.closest('.line');
+    if (!line) return;
+    line.dataset.msgId = msgId;
+    line.classList.add('queued');
+    queuedIds.push(msgId);
+    const tag = document.createElement('div');
+    tag.className = 'queued-tag';
+    tag.textContent = 'navbatda — Claude joriy ishni tugatgach o\'qiydi';
+    contentEl.appendChild(tag);
+  }
+
+  // Bitta navbat tugadi: eng eski kutayotgan xabar endi ishlanmoqda.
+  // `true` qaytarsa — hali navbatda xabar bor, ya'ni ish davom etadi.
+  function releaseOldestQueued() {
+    const msgId = queuedIds.shift();
+    if (msgId) {
+      const line = messagesEl.querySelector(`.line.queued[data-msg-id="${CSS.escape(msgId)}"]`);
+      if (line) {
+        line.classList.remove('queued');
+        const tag = line.querySelector('.queued-tag');
+        if (tag) tag.remove();
+      }
+    }
+    return queuedIds.length > 0 || !!msgId;
+  }
+
+  // Enter yuboradimi yoki yangi qator qo'shadimi. Telefonda ko'p qatorli
+  // matn yozish uchun har safar Shift+Enter bosish noqulay (virtual
+  // klaviaturada Shift umuman ko'rinmasligi mumkin), shuning uchun bu
+  // sozlama qo'shildi. Kompyuterda standart — Enter yuboradi.
+  let enterSends = true;
+  try {
+    const saved = localStorage.getItem('rootwebEnterSends');
+    if (saved !== null) enterSends = saved === '1';
+    else enterSends = !window.matchMedia || !window.matchMedia('(pointer: coarse)').matches;
+  } catch { /* standart qiymat qoladi */ }
+
+  function setEnterSends(v) {
+    enterSends = v;
+    try { localStorage.setItem('rootwebEnterSends', v ? '1' : '0'); } catch { /* noop */ }
+    if (enterModeBtn) {
+      enterModeBtn.textContent = v ? 'Enter ⏎' : 'Enter ↵';
+      enterModeBtn.classList.toggle('on', v);
+      const label = v ? 'Enter yuboradi (bosib almashtiring)' : 'Enter yangi qator (bosib almashtiring)';
+      enterModeBtn.title = label;
+      enterModeBtn.setAttribute('aria-label', label);
+    }
+  }
+
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if (enterSends) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+      // enterSends=false bo'lsa Enter odatdagidek yangi qator qo'shadi
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      // Ctrl/Cmd+Enter har doim yuboradi — rejimdan qat'i nazar
       e.preventDefault();
       form.requestSubmit();
     } else if (e.key === 'Tab' && e.shiftKey) {
@@ -574,69 +996,98 @@
     }
   });
 
-  input.addEventListener('input', () => {
+  // Maksimal balandlik 120px edi — telefonda ~4 qator, ya'ni uzunroq prompt
+  // yozayotganda yozganingizni ko'rmasdingiz. Endi ekran balandligining
+  // 40% igacha o'sadi.
+  function autoGrowInput() {
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-  });
+    const max = Math.max(120, Math.round(window.innerHeight * 0.4));
+    input.style.height = Math.min(input.scrollHeight, max) + 'px';
+  }
+
+  input.addEventListener('input', autoGrowInput);
+  window.addEventListener('resize', autoGrowInput);
+
+  enterModeBtn.addEventListener('click', () => setEnterSends(!enterSends));
+  setEnterSends(enterSends);
 
   stopBtn.addEventListener('click', () => {
     send({ type: 'stop' });
   });
 
-  clearChatBtn.addEventListener('click', () => {
-    const ok = confirm("Suhbat tarixi butunlay o'chadi, qaytarib bo'lmaydi. Davom etasizmi?");
+  clearChatBtn.addEventListener('click', async () => {
+    const ok = await confirmDialog({
+      title: 'Chatni tozalash',
+      message: "Suhbat tarixi butunlay o'chadi va qaytarib bo'lmaydi. Claude ham bu suhbatni eslamaydi.",
+      confirmText: 'Tozalash',
+      danger: true,
+    });
     if (!ok) return;
     send({ type: 'clear_chat' });
   });
 
   logoutBtn.addEventListener('click', async () => {
+    // Tasdiq so'raymiz, chunki chiqish endi BARCHA qurilmalardagi
+    // sessiyalarni bekor qiladi (serverdagi `sessionVersion` oshadi) —
+    // telefondan bosilsa kompyuterdagi ochiq tab ham chiqib ketadi.
+    const ok = await confirmDialog({
+      title: 'Chiqish',
+      message: "Barcha qurilmalardagi sessiyalar tugaydi — boshqa telefon yoki kompyuterda ochiq bo'lsa, ular ham qaytadan parol so'raydi.",
+      confirmText: 'Chiqish',
+      danger: true,
+    });
+    if (!ok) return;
     await fetch('/api/logout', { method: 'POST' });
     window.location.href = '/login.html';
   });
 
-  // ---------------- mavzu (claude / qora / yorug') ----------------
-  const THEME_ORDER = ['claude', 'black', 'light'];
-  const THEME_LABEL = { claude: 'Claude', black: "Qora", light: "Yorug'" };
+  // ---------------- mavzu (tizim / claude / qora / yorug') ----------------
+  // "tizim" varianti qo'shildi: telefon kechqurun avtomatik qorong'i rejimga
+  // o'tsa, ilova ham o'tadi. Avval faqat 3 ta qo'lda tanlanadigan mavzu bor
+  // edi va `prefers-color-scheme` umuman ishlatilmasdi.
+  const THEME_ORDER = ['system', 'claude', 'black', 'light'];
+  const THEME_LABEL = { system: 'Tizim', claude: 'Claude', black: "Qora", light: "Yorug'" };
   const THEME_COLOR = { claude: '#262624', black: '#050505', light: '#faf9f5' };
   const themeMeta = document.querySelector('meta[name="theme-color"]');
+  const darkMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+  // "tizim" tanlanganda haqiqiy mavzuni OS sozlamasidan olamiz.
+  function resolveTheme(theme) {
+    if (theme !== 'system') return theme;
+    return darkMq && darkMq.matches ? 'claude' : 'light';
+  }
 
   function applyTheme(theme) {
-    if (theme === 'claude') document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.setAttribute('data-theme', theme);
-    if (themeMeta) themeMeta.setAttribute('content', THEME_COLOR[theme] || THEME_COLOR.claude);
+    const effective = resolveTheme(theme);
+    if (effective === 'claude') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', effective);
+    if (themeMeta) themeMeta.setAttribute('content', THEME_COLOR[effective] || THEME_COLOR.claude);
     themeBtn.title = `Mavzu: ${THEME_LABEL[theme]} (bosib almashtiring)`;
-    try { localStorage.setItem('claudewebTheme', theme); } catch { /* xotira o'chirilgan bo'lishi mumkin */ }
+    // Sozlamalar panelida joriy qiymat matn bilan ko'rsatiladi (avval bu
+    // topbar'dagi ikonka edi va qaysi mavzu tanlanganini bilib bo'lmasdi).
+    if (themeValue) themeValue.textContent = THEME_LABEL[theme] || theme;
+    try { localStorage.setItem('rootwebTheme', theme); } catch { /* xotira o'chirilgan bo'lishi mumkin */ }
+  }
+
+  function currentThemeSetting() {
+    try { return localStorage.getItem('rootwebTheme') || 'claude'; } catch { return 'claude'; }
   }
 
   themeBtn.addEventListener('click', () => {
-    const current = document.documentElement.getAttribute('data-theme') || 'claude';
-    const next = THEME_ORDER[(THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length];
-    applyTheme(next);
+    const current = currentThemeSetting();
+    const idx = THEME_ORDER.indexOf(current);
+    applyTheme(THEME_ORDER[(idx + 1) % THEME_ORDER.length]);
   });
 
-  applyTheme(document.documentElement.getAttribute('data-theme') || 'claude');
-
-  // ---------------- foydalanish statistikasi (usage) ----------------
-  let usageState = { inputTokens: 0, outputTokens: 0, totalCostUsd: 0 };
-
-  function setUsage(u) {
-    if (!u) return;
-    usageState = {
-      inputTokens: u.inputTokens || 0,
-      outputTokens: u.outputTokens || 0,
-      totalCostUsd: u.totalCostUsd || 0,
-    };
-    if (!panelLimit.classList.contains('hidden')) renderUsagePanel();
+  // OS mavzusi o'zgarsa, "tizim" rejimida darhol ergashamiz.
+  if (darkMq && darkMq.addEventListener) {
+    darkMq.addEventListener('change', () => {
+      if (currentThemeSetting() === 'system') applyTheme('system');
+    });
   }
 
-  function renderUsagePanel() {
-    usageStats.innerHTML = `
-      <div class="usage-stats-title">Foydalanish (joriy sessiya)</div>
-      <div class="usage-row"><span>Kirish</span><span>${usageState.inputTokens.toLocaleString('uz-UZ')}</span></div>
-      <div class="usage-row"><span>Chiqish</span><span>${usageState.outputTokens.toLocaleString('uz-UZ')}</span></div>
-      <div class="usage-row"><span>Xarajat</span><span>$${usageState.totalCostUsd.toFixed(4)}</span></div>
-    `;
-  }
+  applyTheme(currentThemeSetting());
+
 
   // Claude ilovasidagi kabi 5-soatlik/haftalik limit foizi — SDK'ning
   // eksperimental "/usage" metodidan (server orqali) olinadi, panel
@@ -697,13 +1148,26 @@
   let notifyMuted = localStorage.getItem('notifyMuted') === '1';
 
   function updateNotifyBtn() {
-    if (!('Notification' in window)) { notifyBtn.style.display = 'none'; return; }
+    // Brauzer bildirishnomani qo'llab-quvvatlamasa butun BO'LIMNI
+    // yashiramiz (avval faqat ikonka yashirilardi va sozlamalarda bo'sh
+    // sarlavha qolib ketardi).
+    if (!('Notification' in window)) {
+      if (notifyGroup) notifyGroup.classList.add('hidden');
+      return;
+    }
     const active = Notification.permission === 'granted' && !notifyMuted;
+    const blocked = Notification.permission === 'denied';
     notifyBtn.classList.toggle('on', active);
     notifyBtn.classList.toggle('off', !active);
-    const label = active ? 'Bildirishnomalar (yoqilgan)' : "Bildirishnomalar (o'chirilgan)";
-    notifyBtn.title = label;
-    notifyBtn.setAttribute('aria-label', label);
+    const label = blocked
+      ? 'Brauzerda bloklangan'
+      : (active ? 'Yoqilgan' : "O'chirilgan");
+    if (notifyValue) {
+      notifyValue.textContent = label;
+      notifyValue.classList.toggle('on', active);
+    }
+    notifyBtn.title = `Bildirishnomalar: ${label}`;
+    notifyBtn.setAttribute('aria-label', `Bildirishnomalar: ${label}`);
   }
 
   notifyBtn.addEventListener('click', async () => {
@@ -734,18 +1198,70 @@
 
   updateNotifyBtn();
 
+
+  // ---------------- sozlamalar paneli ----------------
+  // Mavzu, bildirishnoma, hisob ulash va chiqish shu yerga ko'chirildi —
+  // topbar'da 7 ta ikonka bor edi va telefonda ular bir-biriga tiqilib
+  // ketardi. Endi topbar'da 4 ta: qidiruv, chatni tozalash, fayllar,
+  // sozlamalar.
+
+  function openSettings() {
+    if (settingsSheet.classList.contains('open')) return;
+    settingsSheet.classList.add('open');
+    settingsOverlay.classList.remove('hidden');
+    requestAnimationFrame(() => settingsOverlay.classList.add('show'));
+    settingsBtn.setAttribute('aria-expanded', 'true');
+    openOverlay('settings', doCloseSettings);
+    // Obuna limiti (5 soatlik / haftalik) shu yerda ko'rsatiladi.
+    // Doimiy so'ralmaydi — faqat panel ochilganda, chunki bu SDK'ning
+    // eksperimental metodi orqali keladi va har safar so'rash keraksiz.
+    renderRateLimits();
+    send({ type: 'get_rate_limits' });
+  }
+
+  function doCloseSettings() {
+    settingsSheet.classList.remove('open');
+    settingsOverlay.classList.remove('show');
+    setTimeout(() => settingsOverlay.classList.add('hidden'), 180);
+    settingsBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  function closeSettings() {
+    requestCloseOverlay('settings');
+  }
+
+  settingsBtn.addEventListener('click', openSettings);
+  settingsCloseBtn.addEventListener('click', closeSettings);
+  settingsOverlay.addEventListener('click', closeSettings);
+
   // ---------------- drawer: loyihalar & fayllar ----------------
 
   function openDrawer() {
+    if (drawer.classList.contains('open')) return;
     drawer.classList.add('open');
     drawerOverlay.classList.remove('hidden');
     requestAnimationFrame(() => drawerOverlay.classList.add('show'));
+    openOverlay('drawer', doCloseDrawer);
+    // "botlar" tabi ochiq qolgan bo'lsa so'rovlarni qayta boshlaymiz —
+    // `doCloseDrawer` ularni to'xtatadi (yopiq drawer uchun har 12 soniyada
+    // so'rov yuborish keraksiz edi).
+    const activeTab = drawer.querySelector('.drawer-tab.active');
+    if (activeTab && activeTab.dataset.tab === 'bots') {
+      loadBotList();
+      startBotPolling();
+    }
   }
 
-  function closeDrawer() {
+  // Haqiqiy yopish — faqat `popstate` orqali chaqiriladi.
+  function doCloseDrawer() {
     drawer.classList.remove('open');
     drawerOverlay.classList.remove('show');
     setTimeout(() => drawerOverlay.classList.add('hidden'), 180);
+    stopBotPolling();
+  }
+
+  function closeDrawer() {
+    requestCloseOverlay('drawer');
   }
 
   filesBtn.addEventListener('click', () => {
@@ -776,7 +1292,19 @@
       const chip = document.createElement('div');
       chip.className = `attachment-chip ${att.kind}${att.uploading ? ' uploading' : ''}`;
       if (att.kind === 'image') {
-        chip.innerHTML = `<img src="${att.previewUrl}" alt="${escapeHtml(att.name)}"><button type="button" class="attachment-remove" aria-label="O'chirish">&times;</button>`;
+        // Rasm DOM API bilan yasaladi, satr sifatida emas: avval fayl nomi
+        // `alt="..."` atributiga escape'siz (qo'shtirnoqsiz) qo'yilardi va
+        // `x" onerror="..."` nomli fayl kod ishga tushirardi.
+        const img = document.createElement('img');
+        img.src = att.previewUrl;
+        img.alt = att.name;
+        chip.appendChild(img);
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'attachment-remove';
+        rm.setAttribute('aria-label', "O'chirish");
+        rm.innerHTML = '&times;';
+        chip.appendChild(rm);
       } else {
         chip.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg><span class="attachment-file-name"></span><button type="button" class="attachment-remove" aria-label="O'chirish">&times;</button>`;
         chip.querySelector('.attachment-file-name').textContent = att.uploading ? `${att.name}…` : att.name;
@@ -874,19 +1402,6 @@
   }
   modeBtn.addEventListener('click', cyclePermissionMode);
 
-  const MODEL_ORDER = ['sonnet', 'opus'];
-  const MODEL_LABEL = { sonnet: 'Sonnet', opus: 'Opus' };
-  function setActiveModel(model) {
-    modelBtn.dataset.model = model;
-    modelBtn.textContent = MODEL_LABEL[model] || model;
-  }
-  function cycleModel() {
-    const idx = MODEL_ORDER.indexOf(modelBtn.dataset.model);
-    const next = MODEL_ORDER[(idx + 1) % MODEL_ORDER.length];
-    send({ type: 'set_model', model: next });
-  }
-  modelBtn.addEventListener('click', cycleModel);
-
   drawerTabs.forEach((btn) => {
     btn.addEventListener('click', () => {
       drawerTabs.forEach((b) => b.classList.remove('active'));
@@ -895,25 +1410,32 @@
       panelProjects.classList.toggle('hidden', tab !== 'projects');
       panelFiles.classList.toggle('hidden', tab !== 'files');
       panelBots.classList.toggle('hidden', tab !== 'bots');
-      panelLimit.classList.toggle('hidden', tab !== 'limit');
-      panelDevices.classList.toggle('hidden', tab !== 'devices');
+      if (panelDevices) panelDevices.classList.toggle('hidden', tab !== 'devices');
+      if (panelStatus) panelStatus.classList.toggle('hidden', tab !== 'status');
       if (tab === 'files') { currentDir = '.'; loadFiles(); }
       if (tab === 'bots') { loadBotList(); startBotPolling(); } else { stopBotPolling(); }
-      if (tab === 'limit') {
-        renderUsagePanel();
-        renderRateLimits();
-        send({ type: 'get_rate_limits' });
-      }
       if (tab === 'devices') { loadDevices(); renderDeviceList(); loadThisDevice(); }
+      if (tab === 'status') loadStatus();
     });
   });
+
+  // Ro'yxatning ko'rinishga ta'sir qiluvchi "barmoq izi". Har 5 soniyada
+  // kelayotgan bir xil javob uchun DOM'ni qayta qurmaslik uchun ishlatiladi —
+  // avval drawer ochiq turganda ham ro'yxat har 5 soniyada butunlay
+  // qayta yaratilardi (bosish paytida element almashib ketishi mumkin edi).
+  let lastProjectsSignature = '';
 
   async function fetchProjects() {
     try {
       const res = await fetch('/api/projects');
       const data = await res.json();
       projectsList = data.projects || [];
-      renderProjectList();
+      const signature = JSON.stringify(projectsList.map((p) => [p.id, p.label, p.path, p.busy, p.pending]))
+        + `|${activeProjectId}`;
+      if (signature !== lastProjectsSignature) {
+        lastProjectsSignature = signature;
+        renderProjectList();
+      }
       updateStatusBadges();
     } catch { /* offline - leave list as-is */ }
   }
@@ -961,7 +1483,12 @@
       delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M10 11v6M14 11v6"/></svg>';
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const ok = confirm(`"${p.label}" loyihasini ro'yxatdan o'chirmoqchimisiz?\n\nFayllar va PM2'dagi tegishli bot/xizmat O'ZGARMAYDI — faqat shu ro'yxatdan va chat tarixi o'chadi.`);
+        const ok = await confirmDialog({
+          title: `"${p.label}" loyihasini o'chirish`,
+          message: "Fayllar va PM2'dagi tegishli bot/xizmat O'ZGARMAYDI — faqat shu ro'yxatdan va chat tarixi o'chadi.",
+          confirmText: "Ro'yxatdan o'chirish",
+          danger: true,
+        });
         if (!ok) return;
         await fetch(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
         fetchProjects();
@@ -978,8 +1505,9 @@
     browseRoot = null;
     activeProjectId = p.id;
     if (sameProject) {
-      // Loyihaning o'zi allaqachon faol, faqat "papkalar" yorliqidan qaytilyapti —
-      // switch_project shart emas, shunchaki fayllar ko'rinishini qayta yuklash yetarli.
+      // Loyihaning o'zi allaqachon faol, faqat boshqa (browseRoot) yo'ldan
+      // qaytilyapti — switch_project shart emas, shunchaki fayllar
+      // ko'rinishini qayta yuklash yetarli.
       currentDir = '.';
       loadFiles();
     } else {
@@ -1047,11 +1575,19 @@
       const res = await fetch('/api/projects/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parent, name }),
+        body: JSON.stringify({
+          parent,
+          name,
+          description: newProjectDescriptionInput.value.trim(),
+          pm2Name: newProjectPm2NameInput.value.trim(),
+        }),
       });
       const data = await res.json();
       if (!res.ok) { addSystemNote('⚠️ ' + (data.error || 'Xatolik')); return; }
       newProjectNameInput.value = '';
+      newProjectDescriptionInput.value = '';
+      newProjectPm2NameInput.value = '';
+      newProjectMetaFields.classList.add('hidden');
       createProjectForm.classList.add('hidden');
       await fetchProjects();
       selectProject(data.project);
@@ -1060,18 +1596,16 @@
     }
   });
 
+  gotoRootBtn.addEventListener('click', () => {
+    browseRoot = '/root';
+    currentDir = '.';
+    loadFiles();
+  });
+
   newFolderToggle.addEventListener('click', () => {
     createFolderForm.classList.toggle('hidden');
     if (!createFolderForm.classList.contains('hidden')) newFolderNameInput.focus();
   });
-
-  // `projectId=` (oddiy loyiha rejimi) yoki `root=` (papka-yorliq rejimi) —
-  // barcha fayl-amal so'rovlari shu orqali quriladi.
-  function browseQuery() {
-    return browseRoot
-      ? `root=${encodeURIComponent(browseRoot)}`
-      : `projectId=${encodeURIComponent(activeProjectId)}`;
-  }
 
   createFolderForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1121,6 +1655,14 @@
     }
   });
 
+  // `projectId=` (oddiy loyiha rejimi) yoki `root=` (papka-yorliq rejimi) —
+  // barcha fayl-amal so'rovlari shu orqali quriladi.
+  function browseQuery() {
+    return browseRoot
+      ? `root=${encodeURIComponent(browseRoot)}`
+      : `projectId=${encodeURIComponent(activeProjectId)}`;
+  }
+
   async function loadFiles() {
     if (!activeProjectId && !browseRoot) {
       fileTreeEl.innerHTML = '<div class="empty-hint">Avval loyiha tanlang.</div>';
@@ -1136,8 +1678,23 @@
       }
       renderBreadcrumb();
       fileTreeEl.innerHTML = '';
+      if (currentDir !== '.') {
+        const upRow = document.createElement('div');
+        upRow.className = 'file-row file-up';
+        upRow.innerHTML = '<span class="file-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></span><span class="file-name">..</span>';
+        upRow.addEventListener('click', () => {
+          const parts = currentDir.split('/');
+          parts.pop();
+          currentDir = parts.length ? parts.join('/') : '.';
+          loadFiles();
+        });
+        fileTreeEl.appendChild(upRow);
+      }
       if (!data.entries.length) {
-        fileTreeEl.innerHTML = '<div class="empty-hint">Bo\'sh papka.</div>';
+        const hint = document.createElement('div');
+        hint.className = 'empty-hint';
+        hint.textContent = "Bo'sh papka.";
+        fileTreeEl.appendChild(hint);
         return;
       }
       for (const entry of data.entries) {
@@ -1161,6 +1718,60 @@
           dl.addEventListener('click', (e) => e.stopPropagation());
           row.appendChild(dl);
         }
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'icon-btn file-rename';
+        renameBtn.title = "Nomini o'zgartirish";
+        renameBtn.setAttribute('aria-label', "Nomini o'zgartirish");
+        renameBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+        renameBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const newName = await promptDialog({
+            title: 'Nomini o\'zgartirish',
+            message: entry.name,
+            value: entry.name,
+            confirmText: 'O\'zgartirish',
+          });
+          if (!newName || newName === entry.name) return;
+          try {
+            const res2 = await fetch(`/api/file/rename?${browseQuery()}&file=${encodeURIComponent(relPath)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ newName }),
+            });
+            const data2 = await res2.json();
+            if (!res2.ok) { addSystemNote('⚠️ ' + (data2.error || "Nomini o'zgartirib bo'lmadi")); return; }
+            loadFiles();
+          } catch { addSystemNote("⚠️ Serverga ulanib bo'lmadi"); }
+        });
+        row.appendChild(renameBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'icon-btn file-del';
+        delBtn.title = "O'chirish";
+        delBtn.setAttribute('aria-label', "O'chirish");
+        delBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>';
+        delBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const ok = await confirmDialog({
+            title: entry.type === 'dir' ? `"${entry.name}" papkasini o'chirish` : `"${entry.name}" faylini o'chirish`,
+            message: entry.type === 'dir'
+              ? "Papka VA ICHIDAGI HAMMA NARSA butunlay o'chadi. Qaytarib bo'lmaydi."
+              : "Fayl butunlay o'chadi. Qaytarib bo'lmaydi.",
+            confirmText: "O'chirish",
+            danger: true,
+          });
+          if (!ok) return;
+          try {
+            const res2 = await fetch(`/api/file?${browseQuery()}&file=${encodeURIComponent(relPath)}`, { method: 'DELETE' });
+            const data2 = await res2.json();
+            if (!res2.ok) { addSystemNote('⚠️ ' + (data2.error || "O'chirilmadi")); return; }
+            loadFiles();
+          } catch { addSystemNote("⚠️ Serverga ulanib bo'lmadi"); }
+        });
+        row.appendChild(delBtn);
+
         row.addEventListener('click', () => {
           if (entry.type === 'dir') { currentDir = relPath; loadFiles(); }
           else openFile(relPath);
@@ -1194,39 +1805,6 @@
     }
   }
 
-  async function openFile(relPath) {
-    currentFilePath = relPath;
-    currentFileEditable = false;
-    setFileEditMode(false);
-    fileViewerName.textContent = relPath;
-    fileDownloadBtn.href = `/api/file/download?${browseQuery()}&file=${encodeURIComponent(relPath)}`;
-    fileViewerContent.textContent = 'Yuklanmoqda...';
-    fileViewerContent.className = 'file-viewer-content';
-    fileViewer.classList.add('open');
-    fileViewerOverlay.classList.remove('hidden');
-    requestAnimationFrame(() => fileViewerOverlay.classList.add('show'));
-    try {
-      const res = await fetch(`/api/file?${browseQuery()}&file=${encodeURIComponent(relPath)}`);
-      const data = await res.json();
-      if (!res.ok) fileViewerContent.textContent = data.error || 'Xatolik';
-      else if (data.binary) fileViewerContent.textContent = "(Binary fayl — ko'rsatib bo'lmaydi)";
-      else if (data.tooLarge) fileViewerContent.textContent = `(Fayl juda katta: ${Math.round(data.size / 1024)} KB)`;
-      else {
-        fileViewerContent.textContent = data.content;
-        currentFileEditable = true;
-        fileEditBtn.classList.remove('hidden');
-        highlightFileContent(relPath);
-      }
-    } catch {
-      fileViewerContent.textContent = "Serverga ulanib bo'lmadi";
-    }
-  }
-
-  // Fayl kengaytmasiga qarab highlight.js (CDN orqali yuklangan) yordamida
-  // sintaksisni ranglaydi — faqat READ ko'rinishida (`fileViewerContent`,
-  // `<pre>`), tahrirlash rejimi hali oddiy `textarea`. CDN yuklanmagan/
-  // bloklangan bo'lsa `window.hljs` yo'q bo'ladi va bu funksiya jim
-  // chiqib ketadi — oddiy matn ko'rinishida qoladi, xatolik bermaydi.
   function highlightFileContent(relPath) {
     if (!window.hljs) return;
     fileViewerContent.className = 'file-viewer-content';
@@ -1245,6 +1823,33 @@
         window.hljs.highlightElement(fileViewerContent);
       }
     } catch { /* highlight ixtiyoriy — muvaffaqiyatsiz bo'lsa oddiy matn qoladi */ }
+  }
+
+  async function openFile(relPath) {
+    stopLogStream();
+    if (liveLogBtn) liveLogBtn.classList.add('hidden');
+    currentFilePath = relPath;
+    currentFileEditable = false;
+    setFileEditMode(false);
+    fileViewerName.textContent = relPath;
+    fileDownloadBtn.href = `/api/file/download?${browseQuery()}&file=${encodeURIComponent(relPath)}`;
+    fileViewerContent.textContent = 'Yuklanmoqda...';
+    openFileViewer();
+    try {
+      const res = await fetch(`/api/file?${browseQuery()}&file=${encodeURIComponent(relPath)}`);
+      const data = await res.json();
+      if (!res.ok) fileViewerContent.textContent = data.error || 'Xatolik';
+      else if (data.binary) fileViewerContent.textContent = "(Binary fayl — ko'rsatib bo'lmaydi)";
+      else if (data.tooLarge) fileViewerContent.textContent = `(Fayl juda katta: ${Math.round(data.size / 1024)} KB)`;
+      else {
+        fileViewerContent.textContent = data.content;
+        currentFileEditable = true;
+        fileEditBtn.classList.remove('hidden');
+        highlightFileContent(relPath);
+      }
+    } catch {
+      fileViewerContent.textContent = "Serverga ulanib bo'lmadi";
+    }
   }
 
   function setFileEditMode(on) {
@@ -1273,6 +1878,7 @@
       if (!res.ok) { addSystemNote('⚠️ ' + (data.error || "Saqlanmadi")); return; }
       fileViewerContent.textContent = fileViewerEditor.value;
       setFileEditMode(false);
+      highlightFileContent(currentFilePath);
     } catch {
       addSystemNote("⚠️ Serverga ulanib bo'lmadi");
     } finally {
@@ -1280,16 +1886,38 @@
     }
   });
 
-  function closeFileViewer() {
+  // Ochish/yopish ikkalasi ham `overlayStack` orqali ketadi, shunda "orqaga"
+  // tugmasi va Escape fayl ko'ruvchini yopadi (ilovadan chiqib ketmaydi).
+  function openFileViewer() {
+    if (fileViewer.classList.contains('open')) return;
+    fileViewer.classList.add('open');
+    fileViewerOverlay.classList.remove('hidden');
+    requestAnimationFrame(() => fileViewerOverlay.classList.add('show'));
+    openOverlay('fileViewer', doCloseFileViewer);
+  }
+
+  function doCloseFileViewer() {
+    // Ochiq qolgan SSE oqimi serverdagi `pm2 logs` jarayonini tirik ushlab
+    // turadi — oyna yopilishi bilan uni to'xtatamiz.
+    stopLogStream();
     fileViewer.classList.remove('open');
     fileViewerOverlay.classList.remove('show');
     setTimeout(() => fileViewerOverlay.classList.add('hidden'), 180);
     setFileEditMode(false);
   }
+
+  function closeFileViewer() {
+    requestCloseOverlay('fileViewer');
+  }
   fileViewerCloseBtn.addEventListener('click', closeFileViewer);
   fileViewerOverlay.addEventListener('click', closeFileViewer);
 
-  // ---------------- qurilmalar ----------------
+  // ================= qurilmalar (ixtiyoriy, SHOW_DEVICES_TAB) =================
+  // Bir xil tarmoqdagi boshqa claude-web nusxalariga tezkor o'tish
+  // ro'yxati (localStorage). Lokal Wi-Fi holati uchun yaratilgan;
+  // VPS o'rnatmasida ixtiyoriy — `config.js` bayrog'i bilan yoqiladi.
+  function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
 
   async function loadThisDevice() {
     thisDeviceList.innerHTML = '<div class="empty-hint">Yuklanmoqda...</div>';
@@ -1407,17 +2035,21 @@
     renderDeviceList();
   });
 
+
   // ---------------- botlar (PM2) ----------------
 
   const PM2_STATUS_LABEL = { online: 'ishlayapti', stopped: "to'xtatilgan", errored: 'xato', stopping: "to'xtamoqda", launching: 'ishga tushmoqda' };
 
+  // Birlik qisqartmalari: avval `s` bitta funksiya ichida HAM soniya, HAM
+  // soat ma'nosida ishlatilardi — "45s" 45 soniya, "3s" esa 3 soat edi.
+  // Endi soniya `son`, daqiqa `daq`, soat `soat`, kun `kun`.
   function formatUptime(ts) {
     if (!ts) return '';
     const sec = Math.floor((Date.now() - ts) / 1000);
-    if (sec < 60) return `${sec}s`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}d`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}s`;
-    return `${Math.floor(sec / 86400)}kun`;
+    if (sec < 60) return `${sec} son`;
+    if (sec < 3600) return `${Math.floor(sec / 60)} daq`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)} soat`;
+    return `${Math.floor(sec / 86400)} kun`;
   }
 
   function formatMem(bytes) {
@@ -1446,15 +2078,37 @@
     if (botPollTimer) { clearInterval(botPollTimer); botPollTimer = null; }
   }
 
+  // Restart soni shu chegaradan oshsa ogohlantiramiz. Avval bu shunchaki
+  // raqam edi va ko'zga tashlanmasdi — natijada `zayafka-bot`ning 139 ta
+  // restarti (boshqalarda 2-13) oylab sezilmay ketishi mumkin edi.
+  const RESTART_WARN = 25;
+  const RESTART_ALERT = 60;
+
+  // Uptime juda qisqa + restart ko'p bo'lsa — bu crash-loop alomati:
+  // jarayon ko'tarilyapti, yiqilyapti va PM2 uni qayta ko'taryapti.
+  function restartSeverity(p) {
+    const restarts = p.restarts || 0;
+    const upSec = p.uptime ? (Date.now() - p.uptime) / 1000 : Infinity;
+    if (restarts >= RESTART_ALERT || (restarts >= RESTART_WARN && upSec < 300)) return 'alert';
+    if (restarts >= RESTART_WARN) return 'warn';
+    return '';
+  }
+
   function renderBotList(processes) {
     botListEl.innerHTML = '';
     if (!processes.length) {
       botListEl.innerHTML = '<div class="empty-hint">PM2 jarayoni topilmadi.</div>';
       return;
     }
-    for (const p of processes) {
+    // Muammolilar tepaga: xato/to'xtagan, keyin ko'p restart bo'lganlar.
+    const ordered = processes.slice().sort((a, b) => {
+      const rank = (p) => (p.status !== 'online' ? 0 : (restartSeverity(p) ? 1 : 2));
+      return rank(a) - rank(b);
+    });
+    for (const p of ordered) {
       const row = document.createElement('div');
-      row.className = 'bot-row';
+      const sev = restartSeverity(p);
+      row.className = 'bot-row' + (sev ? ` restart-${sev}` : '');
       const statusClass = p.status === 'online' ? 'ok' : (p.status === 'errored' ? 'error' : 'warn');
       row.innerHTML = `
         <div class="bot-main">
@@ -1466,10 +2120,12 @@
           <span>${escapeHtml(PM2_STATUS_LABEL[p.status] || p.status || '?')}</span>
           <span>CPU ${p.cpu ?? 0}%</span>
           <span>${formatMem(p.memory)}</span>
-          <span>↻ ${p.restarts ?? 0}</span>
+          <span class="bot-restarts${sev ? ' ' + sev : ''}" ${sev ? `title="Ko'p qayta ishga tushgan — crash-loop bo'lishi mumkin"` : ''}>↻ ${p.restarts ?? 0}</span>
           <span>${formatUptime(p.uptime)}</span>
         </div>
+        ${sev === 'alert' ? '<div class="bot-warning">⚠️ Tez-tez qayta ishga tushyapti — loglarni tekshiring</div>' : ''}
         <div class="bot-actions">
+          <button type="button" class="bot-chat-btn" title="Shu bot bilan suhbat">💬 suhbat</button>
           <button type="button" class="bot-logs-btn" title="Loglar">loglar</button>
           <button type="button" class="bot-restart-btn" title="Restart">restart</button>
           <button type="button" class="bot-stop-btn" title="To'xtatish">to'xtatish</button>
@@ -1477,13 +2133,25 @@
       row.querySelector('.bot-name').textContent = p.name;
       row.querySelector('.bot-ns').textContent = p.namespace && p.namespace !== 'default' ? `(${p.namespace})` : '';
       row.querySelector('.bot-restart-btn').addEventListener('click', async () => {
-        if (!confirm(`"${p.name}" qayta ishga tushiriladi (bir necha soniyaga to'xtaydi). Davom etasizmi?`)) return;
+        const ok = await confirmDialog({
+          title: `"${p.name}" ni qayta ishga tushirish`,
+          message: "Jarayon bir necha soniyaga to'xtaydi, keyin o'zi ko'tariladi.",
+          confirmText: 'Restart',
+        });
+        if (!ok) return;
         await pm2Action(p.name, 'restart');
       });
       row.querySelector('.bot-stop-btn').addEventListener('click', async () => {
-        if (!confirm(`"${p.name}" TO'XTATILADI va qo'lda qayta ishga tushirmaguningizcha ishlamaydi. Davom etasizmi?`)) return;
+        const ok = await confirmDialog({
+          title: `"${p.name}" ni to'xtatish`,
+          message: "Jarayon TO'XTATILADI va qo'lda qayta ishga tushirmaguningizcha ishlamaydi.",
+          confirmText: "To'xtatish",
+          danger: true,
+        });
+        if (!ok) return;
         await pm2Action(p.name, 'stop');
       });
+      row.querySelector('.bot-chat-btn').addEventListener('click', () => openBotChat(p));
       row.querySelector('.bot-logs-btn').addEventListener('click', () => showBotLogs(p.name));
       botListEl.appendChild(row);
     }
@@ -1500,6 +2168,265 @@
     }
   }
 
+  // ---------------- jonli loglar ----------------
+  // Avval loglar bir marta olinardi va statik turardi: bot xatosini
+  // kuzatayotganda "loglar" tugmasini qayta-qayta bosish kerak edi.
+  // Endi "jonli" rejimida yangi qatorlar o'zi kelib turadi (SSE).
+  let logStream = null;
+
+  function stopLogStream() {
+    if (logStream) {
+      logStream.close();
+      logStream = null;
+    }
+    if (liveLogBtn) liveLogBtn.classList.remove('on');
+  }
+
+  let liveLogBtn = null;
+
+  function startLogStream(name) {
+    stopLogStream();
+    // Oqim ochilganda mavjud matn saqlanadi, yangi qatorlar ustiga qo'shiladi.
+    logStream = new EventSource(`/api/pm2/${encodeURIComponent(name)}/logs/stream`);
+    liveLogBtn.classList.add('on');
+
+    logStream.onmessage = (e) => {
+      let chunk;
+      try { chunk = JSON.parse(e.data); } catch { return; }
+      // Foydalanuvchi yuqoriga chiqib o'qiyotgan bo'lsa pastga tortmaymiz.
+      const atBottom = fileViewerContent.scrollHeight - fileViewerContent.scrollTop
+        - fileViewerContent.clientHeight < 60;
+      fileViewerContent.textContent += chunk;
+      // Cheksiz o'smasin — oxirgi ~200KB yetarli.
+      if (fileViewerContent.textContent.length > 200000) {
+        fileViewerContent.textContent = fileViewerContent.textContent.slice(-150000);
+      }
+      if (atBottom) fileViewerContent.scrollTop = fileViewerContent.scrollHeight;
+    };
+    logStream.addEventListener('error', () => {
+      // Server xatosi yoki ulanish uzilishi — EventSource o'zi qayta ulanadi,
+      // lekin foydalanuvchiga holatni ko'rsatib qo'yamiz.
+      if (liveLogBtn) liveLogBtn.classList.remove('on');
+    });
+    logStream.addEventListener('end', () => stopLogStream());
+  }
+
+
+
+  // ================= VPS holati va favqulodda amallar =================
+  //
+  // Nega bu Claude orqali emas: "hujum bo'ldimi", "yuklama qanday",
+  // "disk to'lmadimi" — deterministik savollar. Claude'dan so'ralganda u
+  // 5-10 buyruq ishga tushiradi, natijalar kontekstga tushadi va sessiya
+  // oxirigacha har navbatda qayta yuboriladi. Bu yerda: bir so'rov, 0 token.
+  //
+  // Favqulodda amallar ayniqsa muhim: fail2ban/UFW ga tushib qolgan paytda
+  // Claude sekin bo'lishi yoki limitga urilishi mumkin — chiqish yo'li
+  // AI'ga bog'liq bo'lmasligi kerak.
+
+  function fmtUptime(sec) {
+    if (!sec) return '—';
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    if (d) return `${d} kun ${h} soat`;
+    const m = Math.floor((sec % 3600) / 60);
+    return h ? `${h} soat ${m} daq` : `${m} daq`;
+  }
+
+  // Foizga qarab rang: 0-69 normal, 70-89 ogohlantirish, 90+ xavfli.
+  function pctTier(pct) {
+    if (pct == null) return '';
+    if (pct >= 90) return 'critical';
+    if (pct >= 70) return 'warning';
+    return '';
+  }
+
+  function statusBar(label, pct, detail) {
+    const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+    return `
+      <div class="rl-row">
+        <div class="rl-label-row"><span class="rl-name">${escapeHtml(label)}</span><span class="rl-pct">${pct == null ? '—' : p + '%'}</span></div>
+        <div class="rl-track"><div class="rl-fill ${pctTier(pct)}" style="width:${p}%"></div></div>
+        <div class="rl-reset">${escapeHtml(detail || '')}</div>
+      </div>`;
+  }
+
+  async function loadStatus() {
+    statusBody.innerHTML = '<div class="empty-hint">Yuklanmoqda…</div>';
+    let s;
+    try {
+      const res = await fetch('/api/status');
+      s = await res.json();
+      if (!res.ok) throw new Error(s.error || 'Xatolik');
+    } catch (err) {
+      statusBody.innerHTML = `<div class="empty-hint">⚠️ ${escapeHtml(err.message || "Serverga ulanib bo'lmadi")}</div>`;
+      return;
+    }
+
+    const parts = [];
+    parts.push(`<div class="status-head">${escapeHtml(s.host || '')} · ${fmtUptime(s.uptimeSec)} ishlayapti</div>`);
+
+    parts.push('<div class="rate-limit-stats">');
+    if (s.load) {
+      parts.push(statusBar('Protsessor yuklamasi', s.load.pct,
+        `${s.load.m1} / ${s.load.m5} / ${s.load.m15}  ·  ${s.load.cores} yadro`));
+    }
+    if (s.memory) {
+      parts.push(statusBar('Xotira', s.memory.usedPct,
+        `${s.memory.usedGb ?? '?'} GB / ${s.memory.totalGb} GB band`));
+    }
+    if (s.disk) {
+      parts.push(statusBar('Disk', s.disk.usedPct,
+        `${s.disk.usedGb} GB / ${s.disk.totalGb} GB band`));
+    }
+    parts.push('</div>');
+
+    // Xavfsizlik ko'rsatkichlari
+    const sec = [];
+    if (s.fail2ban) {
+      const worst = s.fail2ban.jails[0];
+      sec.push(`<div class="usage-row"><span>Hozir banlangan IP</span><span>${s.fail2ban.totalBanned}</span></div>`);
+      if (worst && worst.banned > 0) {
+        sec.push(`<div class="usage-row"><span>Eng ko'p</span><span>${escapeHtml(worst.jail)} (${worst.banned})</span></div>`);
+      }
+    }
+    if (s.ssh) {
+      sec.push(`<div class="usage-row"><span>SSH: muvaffaqiyatsiz (24s)</span><span>${s.ssh.failed}</span></div>`);
+      sec.push(`<div class="usage-row"><span>SSH: muvaffaqiyatli (24s)</span><span>${s.ssh.accepted}</span></div>`);
+    }
+    if (sec.length) {
+      parts.push('<div class="usage-stats"><div class="usage-stats-title">Xavfsizlik (24 soat)</div>' + sec.join('') + '</div>');
+    }
+    if (!s.fail2ban) {
+      parts.push('<div class="empty-hint">fail2ban ma\'lumoti mavjud emas (o\'rnatilmagan yoki huquq yo\'q).</div>');
+    }
+
+    statusBody.innerHTML = parts.join('');
+
+    // Favqulodda bo'limi faqat root instansiyasida
+    if (emergencyBox) {
+      emergencyBox.classList.toggle('hidden', !instanceConfig.isRoot);
+      if (instanceConfig.isRoot) loadBannedList();
+    }
+  }
+
+  async function loadBannedList() {
+    try {
+      const res = await fetch('/api/emergency/banned');
+      const data = await res.json();
+      if (!res.ok) { bannedList.innerHTML = ''; return; }
+      if (!data.jails || !data.jails.length) {
+        bannedList.innerHTML = '<div class="empty-hint">Banlangan IP yo\'q.</div>';
+        return;
+      }
+      bannedList.innerHTML = '';
+      for (const j of data.jails) {
+        const row = document.createElement('div');
+        row.className = 'banned-row';
+        row.innerHTML = '<span class="banned-jail"></span><span class="banned-ips"></span>';
+        row.querySelector('.banned-jail').textContent = j.jail;
+        row.querySelector('.banned-ips').textContent = j.ips.join(', ');
+        bannedList.appendChild(row);
+      }
+    } catch { /* tarmoq xatosi — ro'yxat bo'sh qoladi */ }
+  }
+
+  if (unbanForm) {
+    unbanForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const ip = unbanIpInput.value.trim();
+      if (!ip) return;
+      const ok = await confirmDialog({
+        title: `${ip} banini yechish`,
+        message: 'Bu IP barcha fail2ban jail\'laridan chiqariladi.',
+        confirmText: 'Yechish',
+      });
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/emergency/unban', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip }),
+        });
+        const data = await res.json();
+        if (!res.ok) { addSystemNote('⚠️ ' + (data.error || 'Xatolik')); return; }
+        addSystemNote(data.unbannedFrom.length
+          ? `${ip} chiqarildi: ${data.unbannedFrom.join(', ')}`
+          : `${ip} hech qaysi jail'da banlangan emas edi`);
+        loadBannedList();
+      } catch {
+        addSystemNote("⚠️ Serverga ulanib bo'lmadi");
+      }
+    });
+  }
+
+  if (allowSshBtn) {
+    allowSshBtn.addEventListener('click', async () => {
+      const ip = unbanIpInput.value.trim();
+      if (!ip) { addSystemNote('⚠️ Avval IP manzilni kiriting'); return; }
+      const ok = await confirmDialog({
+        title: `${ip} ga SSH ochish`,
+        message: 'Bu IP uchun 22-port (SSH) firewall\'da DOIMIY ochiladi. '
+          + 'Faqat o\'zingizning ishonchli manzilingiz bo\'lsa qiling.',
+        confirmText: 'Ochish',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/emergency/allow-ssh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip }),
+        });
+        const data = await res.json();
+        addSystemNote(res.ok ? `${ip} uchun SSH ochildi` : '⚠️ ' + (data.error || 'Xatolik'));
+      } catch {
+        addSystemNote("⚠️ Serverga ulanib bo'lmadi");
+      }
+    });
+  }
+
+  // ================= bot suhbati =================
+  //
+  // Botlar panelidagi 💬 tugma. Muammo shu edi: har safar chatga
+  // "sen VPS'dasan, T loyihani top" deb yozish kerak bo'lardi — Claude
+  // qidirish uchun 5-10 buyruq sarflardi va asosiy ish hali boshlanmagan
+  // bo'lardi.
+  //
+  // Endi: papka PM2'ning o'zidan olinadi, sessiya TOZA holda o'sha
+  // papkada boshlanadi. Claude Code `CLAUDE.md`ni avtomatik o'qiydi,
+  // `OXIRGI-ISH.md` esa oxirgi amallarni aytadi — ya'ni "nima bo'lgan edi"
+  // ham ma'lum. Shuning uchun eski suhbatni saqlash kerak emas.
+  async function openBotChat(p) {
+    const ok = await confirmDialog({
+      title: `"${p.name}" bilan suhbat`,
+      message: 'Yangi suhbat ochiladi. Claude to\'g\'ridan-to\'g\'ri shu botning '
+        + 'papkasida ishlaydi va CLAUDE.md / OXIRGI-ISH.md fayllaridan '
+        + 'loyihani darhol tushunadi.\n\nShu botning oldingi suhbati bo\'lsa, u tozalanadi.',
+      confirmText: 'Boshlash',
+    });
+    if (!ok) return;
+
+    try {
+      const res = await fetch(`/api/bot-chat/${encodeURIComponent(p.name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addSystemNote('⚠️ ' + (data.error || 'Suhbatni ochib bo\'lmadi'));
+        return;
+      }
+      await fetchProjects();
+      // Drawer yopiladi va chat o'sha loyihaga o'tadi.
+      closeDrawer();
+      selectProject(data.project);
+      addSystemNote(`"${p.name}" bilan yangi suhbat — papka: ${data.project.path}`);
+    } catch {
+      addSystemNote("⚠️ Serverga ulanib bo'lmadi");
+    }
+  }
+
   async function showBotLogs(name) {
     fileViewerName.textContent = `${name} — loglar`;
     fileDownloadBtn.removeAttribute('href');
@@ -1508,21 +2435,37 @@
     fileViewerContent.textContent = 'Yuklanmoqda...';
     currentFileEditable = false;
     setFileEditMode(false);
-    fileViewer.classList.add('open');
-    fileViewerOverlay.classList.remove('hidden');
-    requestAnimationFrame(() => fileViewerOverlay.classList.add('show'));
+
+    // "jonli" tugmasi fayl ko'ruvchi sarlavhasiga qo'shiladi (faqat loglar
+    // uchun; oddiy fayl ochilganda olib tashlanadi).
+    if (!liveLogBtn) {
+      liveLogBtn = document.createElement('button');
+      liveLogBtn.type = 'button';
+      liveLogBtn.className = 'live-log-btn';
+      liveLogBtn.textContent = 'jonli';
+      liveLogBtn.title = 'Yangi qatorlarni real vaqtda kuzatish';
+      fileViewerName.insertAdjacentElement('afterend', liveLogBtn);
+    }
+    liveLogBtn.classList.remove('hidden');
+    liveLogBtn.onclick = () => {
+      if (logStream) stopLogStream();
+      else startLogStream(name);
+    };
+
+    openFileViewer();
     try {
       const res = await fetch(`/api/pm2/${encodeURIComponent(name)}/logs?lines=100`);
       const data = await res.json();
       fileViewerContent.textContent = res.ok ? (data.logs || '(bo\'sh)') : ('⚠️ ' + (data.error || 'Xatolik'));
+      fileViewerContent.scrollTop = fileViewerContent.scrollHeight;
     } catch {
       fileViewerContent.textContent = "Serverga ulanib bo'lmadi";
     }
   }
 
   // Faol loyihaga bog'liq PM2 nomi bo'lsa, topbar'da kichik status-nuqta
-  // ko'rsatiladi (masalan tolov-bot bilan ishlayotganda uning holati bir
-  // qarashda ko'rinadi, "botlar" panelini alohida ochmasdan).
+  // ko'rsatiladi (masalan @avtopost3_bot bilan ishlayotganda uning holati
+  // bir qarashda ko'rinadi, "botlar" panelini alohida ochmasdan).
   function updatePm2Badge(processes) {
     if (!activeProjectPm2Name) { pm2StatusBadge.classList.add('hidden'); return; }
     const match = processes.find((p) => p.name === activeProjectPm2Name);
@@ -1531,6 +2474,322 @@
     pm2StatusBadge.textContent = `${activeProjectPm2Name}: ${PM2_STATUS_LABEL[match.status] || match.status}`;
     pm2StatusBadge.classList.toggle('bad', match.status !== 'online');
   }
+
+  // ================= I: loyihalar orasida tez almashish =================
+  // Avval loyiha almashtirish uchun: drawer och -> "loyihalar" tabi -> tanla.
+  // Endi topbar'dagi yo'lni bosish yetarli.
+
+  function closeProjectSwitcher() {
+    projectSwitcher.classList.add('hidden');
+    cwdLabel.setAttribute('aria-expanded', 'false');
+  }
+
+  function renderProjectSwitcher() {
+    projectSwitcher.innerHTML = '';
+    if (!projectsList.length) {
+      const hint = document.createElement('div');
+      hint.className = 'empty-hint';
+      hint.textContent = "Loyiha yo'q.";
+      projectSwitcher.appendChild(hint);
+      return;
+    }
+    for (const p of projectsList) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'switcher-row' + (p.id === activeProjectId ? ' active' : '');
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', String(p.id === activeProjectId));
+      const badge = p.pending > 0 ? 'ruxsat!' : (p.busy ? 'band' : '');
+      row.innerHTML = '<span class="switcher-label"></span><span class="switcher-path"></span>'
+        + (badge ? `<span class="row-badge ${p.pending > 0 ? 'pending' : 'busy'}">${badge}</span>` : '');
+      row.querySelector('.switcher-label').textContent = p.label;
+      row.querySelector('.switcher-path').textContent = p.path;
+      row.addEventListener('click', () => {
+        requestCloseOverlay('switcher');
+        if (p.id !== activeProjectId) {
+          browseRoot = null;
+          activeProjectId = p.id;
+          isSwitching = true;
+          send({ type: 'switch_project', id: p.id });
+        }
+      });
+      projectSwitcher.appendChild(row);
+    }
+  }
+
+  cwdLabel.addEventListener('click', () => {
+    if (!projectSwitcher.classList.contains('hidden')) {
+      requestCloseOverlay('switcher');
+      return;
+    }
+    renderProjectSwitcher();
+    projectSwitcher.classList.remove('hidden');
+    cwdLabel.setAttribute('aria-expanded', 'true');
+    openOverlay('switcher', closeProjectSwitcher);
+    fetchProjects().then(() => {
+      if (!projectSwitcher.classList.contains('hidden')) renderProjectSwitcher();
+    });
+  });
+
+  // ================= L: chatda qidirish =================
+  // Uzun sessiyada biror narsani topishning yagona yo'li brauzerning o'z
+  // Ctrl+F i edi — u esa telefonda PWA rejimida umuman yo'q.
+
+  let searchMatches = [];
+  let searchIndex = -1;
+
+  function clearSearchHighlights() {
+    for (const el of messagesEl.querySelectorAll('.search-hit')) {
+      el.classList.remove('search-hit', 'search-hit-active');
+    }
+    searchMatches = [];
+    searchIndex = -1;
+    searchCount.textContent = '';
+  }
+
+  function runSearch(term) {
+    clearSearchHighlights();
+    const q = term.trim().toLowerCase();
+    if (q.length < 2) return;
+    // Butun bloklarni belgilaymiz (matn tugunlarini bo'lakka bo'lmasdan) —
+    // shunda mavjud DOM va nusxa tugmalari buzilmaydi.
+    const blocks = messagesEl.querySelectorAll('.line, .tool-card, .system-note, .permission-card, .permission-resolved');
+    for (const b of blocks) {
+      if ((b.textContent || '').toLowerCase().includes(q)) {
+        b.classList.add('search-hit');
+        searchMatches.push(b);
+      }
+    }
+    if (searchMatches.length) {
+      searchIndex = searchMatches.length - 1; // eng oxirgisidan boshlaymiz
+      focusSearchMatch();
+    } else {
+      searchCount.textContent = '0';
+    }
+  }
+
+  function focusSearchMatch() {
+    searchMatches.forEach((m) => m.classList.remove('search-hit-active'));
+    const el = searchMatches[searchIndex];
+    if (!el) return;
+    el.classList.add('search-hit-active');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    searchCount.textContent = `${searchIndex + 1}/${searchMatches.length}`;
+  }
+
+  function stepSearch(delta) {
+    if (!searchMatches.length) return;
+    searchIndex = (searchIndex + delta + searchMatches.length) % searchMatches.length;
+    focusSearchMatch();
+  }
+
+  function closeSearch() {
+    searchBar.classList.add('hidden');
+    clearSearchHighlights();
+    searchInput.value = '';
+  }
+
+  searchBtn.addEventListener('click', () => {
+    if (!searchBar.classList.contains('hidden')) {
+      requestCloseOverlay('search');
+      return;
+    }
+    searchBar.classList.remove('hidden');
+    searchInput.focus();
+    openOverlay('search', closeSearch);
+  });
+  searchClose.addEventListener('click', () => requestCloseOverlay('search'));
+  searchPrev.addEventListener('click', () => stepSearch(-1));
+  searchNext.addEventListener('click', () => stepSearch(1));
+
+  let searchDebounce = null;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => runSearch(searchInput.value), 180);
+  });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      stepSearch(e.shiftKey ? -1 : 1);
+    }
+  });
+
+  // ================= F: tez buyruqlar =================
+  // 26 ta bot bilan ishlaganda takrorlanuvchi promptlar ko'p. Telefonda
+  // ularni har safar qo'lda yozish eng ko'p vaqt oladigan narsa edi.
+
+  const DEFAULT_QUICK_CMDS = [
+    { label: 'Botlar holati', text: 'Barcha PM2 jarayonlari holatini tekshir va muammolilarini ayt' },
+    { label: 'Xato loglar', text: 'Oxirgi xatolik loglarini ko\'rsat va sababini tushuntir' },
+    { label: 'Git holat', text: 'Bu loyihada git status va oxirgi 5 ta commitni ko\'rsat' },
+    { label: 'Disk joyi', text: 'Serverda disk va xotira holatini tekshir' },
+  ];
+
+  function loadQuickCmds() {
+    try {
+      const raw = localStorage.getItem('rootwebQuickCmds');
+      if (!raw) return DEFAULT_QUICK_CMDS.slice();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : DEFAULT_QUICK_CMDS.slice();
+    } catch {
+      return DEFAULT_QUICK_CMDS.slice();
+    }
+  }
+
+  function saveQuickCmds(list) {
+    try { localStorage.setItem('rootwebQuickCmds', JSON.stringify(list)); } catch { /* noop */ }
+  }
+
+  let quickCmds = loadQuickCmds();
+
+  function renderQuickCmds() {
+    quickCmdsEl.innerHTML = '';
+    for (const cmd of quickCmds) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'quick-chip';
+      chip.textContent = cmd.label;
+      chip.title = cmd.text;
+      chip.addEventListener('click', () => {
+        input.value = cmd.text;
+        autoGrowInput();
+        input.focus();
+      });
+      // Uzoq bosish — o'chirish (telefonda kontekst menyusi o'rniga)
+      let pressTimer = null;
+      const startPress = () => {
+        pressTimer = setTimeout(async () => {
+          const ok = await confirmDialog({
+            title: `"${cmd.label}" ni o'chirish`,
+            message: cmd.text,
+            confirmText: "O'chirish",
+            danger: true,
+          });
+          if (!ok) return;
+          quickCmds = quickCmds.filter((c) => c !== cmd);
+          saveQuickCmds(quickCmds);
+          renderQuickCmds();
+        }, 600);
+      };
+      const cancelPress = () => clearTimeout(pressTimer);
+      chip.addEventListener('touchstart', startPress, { passive: true });
+      chip.addEventListener('touchend', cancelPress);
+      chip.addEventListener('touchmove', cancelPress);
+      chip.addEventListener('mousedown', startPress);
+      chip.addEventListener('mouseup', cancelPress);
+      chip.addEventListener('mouseleave', cancelPress);
+      quickCmdsEl.appendChild(chip);
+    }
+
+    const addChip = document.createElement('button');
+    addChip.type = 'button';
+    addChip.className = 'quick-chip quick-chip-add';
+    addChip.textContent = '+';
+    addChip.title = "Joriy matnni tez buyruq sifatida saqlash";
+    addChip.setAttribute('aria-label', 'Tez buyruq qo\'shish');
+    addChip.addEventListener('click', async () => {
+      const text = input.value.trim();
+      if (!text) {
+        addSystemNote('⚠️ Avval yozuv maydoniga matn kiriting, keyin + ni bosing');
+        return;
+      }
+      const label = await promptDialog({
+        title: 'Tez buyruq qo\'shish',
+        message: text,
+        value: text.slice(0, 24),
+        placeholder: 'Qisqa nom',
+        confirmText: 'Saqlash',
+      });
+      if (!label) return;
+      quickCmds.push({ label, text });
+      saveQuickCmds(quickCmds);
+      renderQuickCmds();
+    });
+    quickCmdsEl.appendChild(addChip);
+  }
+
+  function setQuickCmdsVisible(v) {
+    quickCmdsEl.classList.toggle('hidden', !v);
+    quickCmdsBtn.classList.toggle('on', v);
+    try { localStorage.setItem('rootwebQuickCmdsOpen', v ? '1' : '0'); } catch { /* noop */ }
+    if (v) renderQuickCmds();
+  }
+
+  quickCmdsBtn.addEventListener('click', () => {
+    setQuickCmdsVisible(quickCmdsEl.classList.contains('hidden'));
+  });
+
+  try {
+    setQuickCmdsVisible(localStorage.getItem('rootwebQuickCmdsOpen') === '1');
+  } catch {
+    setQuickCmdsVisible(false);
+  }
+
+  // ================= O: swipe bilan drawer ochish/yopish =================
+  // Telefonda o'ng chetdan chapga surish — drawer ochiladi; drawer ustida
+  // o'ngga surish — yopiladi.
+  const SWIPE_EDGE_PX = 28;
+  const SWIPE_MIN_PX = 60;
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchTracking = false;
+
+  document.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+    const fromRightEdge = touchStartX > window.innerWidth - SWIPE_EDGE_PX;
+    const inDrawer = drawer.classList.contains('open') && drawer.contains(e.target);
+    touchTracking = fromRightEdge || inDrawer;
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (!touchTracking) return;
+    touchTracking = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = Math.abs(t.clientY - touchStartY);
+    // Vertikal harakat gorizontaldan katta bo'lsa — bu skroll, swipe emas.
+    if (dy > Math.abs(dx)) return;
+    if (dx < -SWIPE_MIN_PX && !drawer.classList.contains('open')) {
+      openDrawer();
+      fetchProjects();
+    } else if (dx > SWIPE_MIN_PX && drawer.classList.contains('open')) {
+      closeDrawer();
+    }
+  }, { passive: true });
+
+  // ================= K: service worker (PWA) =================
+  // Ilova qobigi keshlanadi — internetsiz ham ochiladi va qayta yuklash
+  // sezilarli tez boladi. API va HTML hech qachon keshdan berilmaydi
+  // (sw.js ichidagi izohga qara).
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch((err) => {
+        // SW ixtiyoriy — royxatdan otmasa ilova odatdagidek ishlayveradi.
+        console.warn('Service worker royxatdan otmadi:', err && err.message);
+      });
+    });
+  }
+
+
+  // ================= instansiya sozlamalari =================
+  // Bitta kod ikki xil o'rnatmada ishlaydi (root / sandbox) — qaysi
+  // funksiyalar ko'rinishini server `/api/config` orqali aytadi.
+  let instanceConfig = { instanceMode: 'root', isRoot: true, showDevicesTab: false };
+
+  async function loadInstanceConfig() {
+    try {
+      const res = await fetch('/api/config');
+      if (!res.ok) return;
+      instanceConfig = await res.json();
+    } catch { /* tarmoq xatosi — standart qiymatlar qoladi */ }
+    if (devicesTab) devicesTab.classList.toggle('hidden', !instanceConfig.showDevicesTab);
+    document.documentElement.dataset.instance = instanceConfig.instanceMode;
+  }
+
+  loadInstanceConfig();
 
   fetchProjects();
   setInterval(fetchProjects, 5000);

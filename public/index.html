@@ -2,17 +2,28 @@
 <html lang="uz">
 <head>
 <meta charset="utf-8">
-<script>(function(){try{var t=localStorage.getItem('claudewebTheme');if(t&&t!=='claude')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<!-- Mavzuni sahifa chizilishidan OLDIN qo'yadi (FOUC bo'lmasligi uchun).
+     Inline emas, alohida fayl — shunda CSP `script-src 'self'` qat'iy
+     bo'la oladi va 'unsafe-inline' kerak bo'lmaydi. -->
+<script src="/theme-boot.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Claude Code Web</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#262624">
-<link rel="apple-touch-icon" href="/icon.svg">
-<!-- Fayl ko'ruvchidagi syntax highlighting uchun (faqat READ rejimida, muharrir
-     hali oddiy textarea) — CDN orqali, npm bog'liqligiga aylantirilmagan. -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<!-- iOS SVG apple-touch-icon ni qabul qilmaydi — PNG shart, aks holda
+     "Bosh ekranga qoshish"da ikonka bosh/oq chiqadi. -->
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png">
+<!-- Fayl ko'ruvchidagi syntax highlighting (faqat READ rejimida, muharrir
+     hali oddiy textarea).
+     ⚠️ Avval bu cdnjs'dan, `integrity` (SRI) sarlavhasisiz yuklanardi. Bu
+     ilova root shell beradi, ya'ni CDN buzilsa yoki ushlab qolinsa —
+     autentifikatsiyalangan origin ichida ixtiyoriy JS ishga tushib, butun
+     VPS qo'ldan ketardi. Sintaksis bo'yash kabi kosmetik funksiya uchun bu
+     juda qimmat narx edi, shuning uchun fayl `public/vendor/` ga
+     ko'chirildi — tashqi bog'liqlik butunlay yo'q. -->
+<link rel="stylesheet" href="/vendor/highlight-github-dark.min.css">
+<script src="/vendor/highlight.min.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -20,36 +31,60 @@
       <div class="tl-title">
         <span class="status-dot" id="statusDot"></span>
         <span class="tl-name">Claude Code</span>
-        <span class="cwd" id="cwdLabel">—</span>
+        <!-- Yo'l endi bosiladigan: loyihalar orasida tez almashish uchun
+             ro'yxat ochiladi (avval drawer -> tab -> tanlash kerak edi). -->
+        <button type="button" class="cwd cwd-btn" id="cwdLabel" title="Loyihani almashtirish" aria-haspopup="listbox" aria-expanded="false">—</button>
         <span class="pm2-badge hidden" id="pm2StatusBadge"></span>
       </div>
       <div class="tl-actions">
+        <button class="icon-btn" id="searchBtn" title="Chatda qidirish" aria-label="Chatda qidirish">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        </button>
         <button class="icon-btn" id="clearChatBtn" title="Chatni tozalash" aria-label="Chatni tozalash">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.6"/><path d="M20 5v6h-6"/></svg>
-        </button>
-        <button class="icon-btn" id="themeBtn" title="Mavzu (bosib almashtiring)" aria-label="Mavzu">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18V3z" fill="currentColor" stroke="none"/></svg>
-        </button>
-        <button class="icon-btn" id="notifyBtn" title="Bildirishnomalar" aria-label="Bildirishnomalar">
-          <svg class="i-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 1 1 12 0c0 3.2 1 5 2 6H4c1-1 2-2.8 2-6z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>
-          <svg class="i-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 1 1 12 0c0 3.2 1 5 2 6H4c1-1 2-2.8 2-6z"/><path d="M10 19a2 2 0 0 0 4 0"/><path d="M3 3l18 18"/></svg>
         </button>
         <button class="icon-btn" id="filesBtn" title="Fayllar va loyihalar" aria-label="Fayllar va loyihalar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6z"/></svg>
           <span class="badge-dot hidden" id="filesBadge"></span>
         </button>
-        <a class="icon-btn" href="/auth.html" title="Claude hisobini ulash" aria-label="Claude hisobini ulash">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M16 7l3 3"/><path d="M13 10l2.5 2.5"/></svg>
-        </a>
-        <button class="icon-btn" id="logoutBtn" title="Chiqish" aria-label="Chiqish">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3"/><path d="M15 8l4 4-4 4"/><path d="M19 12H9"/></svg>
+        <!-- Mavzu, bildirishnoma, hisob va chiqish shu yerga ko'chirildi —
+             topbar'da 7 ta tugma bor edi, telefonda bu juda ko'p. -->
+        <button class="icon-btn" id="settingsBtn" title="Sozlamalar" aria-label="Sozlamalar" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
     </header>
 
+    <!-- Loyihalar tez tanlash ro'yxati (topbar'dagi yo'l bosilganda) -->
+    <div id="projectSwitcher" class="project-switcher hidden" role="listbox" aria-label="Loyihalar"></div>
+
+    <!-- Chatda qidirish paneli -->
+    <div id="searchBar" class="search-bar hidden">
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="search-icon"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input type="search" id="searchInput" placeholder="Chatda qidirish..." autocomplete="off">
+      <span class="search-count" id="searchCount"></span>
+      <button type="button" id="searchPrev" class="icon-btn-sm" title="Oldingi" aria-label="Oldingi natija">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 15l-6-6-6 6"/></svg>
+      </button>
+      <button type="button" id="searchNext" class="icon-btn-sm" title="Keyingi" aria-label="Keyingi natija">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <button type="button" id="searchClose" class="icon-btn-sm" title="Yopish" aria-label="Qidiruvni yopish">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
     <div id="messages"></div>
 
     <div class="composer-wrap">
+      <!-- Chatda yuqoriga chiqilganda paydo bo'ladi; yangi xabar kelsa
+           `unread` klassi bilan belgilanadi. Composer ICHIDA turadi, shunda
+           matn maydoni o'sganda ham u bilan birga siljiydi. -->
+      <button type="button" id="jumpBottomBtn" class="jump-bottom hidden" title="Pastga" aria-label="Eng pastga o'tish">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M6 13l6 6 6-6"/></svg>
+      </button>
+      <!-- Tez buyruqlar: takrorlanuvchi promptlar (localStorage'da saqlanadi) -->
+      <div id="quickCmds" class="quick-cmds hidden"></div>
       <form id="composer">
         <div id="attachmentRow" class="attachment-row hidden"></div>
         <textarea id="input" rows="1" placeholder="Xabar yozing..."></textarea>
@@ -60,7 +95,8 @@
             </button>
             <input type="file" id="composerFileInput" class="hidden" multiple>
             <button type="button" id="modeBtn" class="mode-pill" data-mode="default" title="Ruxsat rejimi (bosib almashtiring)">Manual</button>
-            <button type="button" id="modelBtn" class="mode-pill" data-model="sonnet" title="Model (bosib almashtiring)">Sonnet</button>
+            <button type="button" id="quickCmdsBtn" class="mode-pill" title="Tez buyruqlar" aria-label="Tez buyruqlar">⚡</button>
+            <button type="button" id="enterModeBtn" class="mode-pill enter-pill" title="Enter yuboradi (bosib almashtiring)">Enter ⏎</button>
           </div>
           <div class="composer-toolbar-right">
             <button type="button" id="stopBtn" title="To'xtatish" aria-label="To'xtatish">
@@ -79,11 +115,11 @@
   <aside id="drawer" class="drawer">
     <div class="drawer-header">
       <div class="drawer-tabs">
+        <button type="button" class="drawer-tab" data-tab="status">holat</button>
         <button type="button" class="drawer-tab active" data-tab="projects">loyihalar</button>
         <button type="button" class="drawer-tab" data-tab="files">fayllar</button>
         <button type="button" class="drawer-tab" data-tab="bots">botlar</button>
-        <button type="button" class="drawer-tab" data-tab="limit">limit</button>
-        <button type="button" class="drawer-tab" data-tab="devices">qurilmalar</button>
+        <button type="button" class="drawer-tab hidden" data-tab="devices" id="devicesTab">qurilmalar</button>
       </div>
       <button class="icon-btn" id="drawerCloseBtn" title="Yopish" aria-label="Yopish">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -97,8 +133,8 @@
       </form>
       <button type="button" id="newProjectMetaToggle" class="new-project-toggle">+ kontekst / PM2 nomi (ixtiyoriy)</button>
       <div id="newProjectMetaFields" class="create-project-form hidden">
-        <textarea id="newProjectDescription" placeholder="Loyiha haqida qisqa kontekst — Claude har safar suhbat boshlanganda avtomatik biladi (masalan: tolov-bot, to'lov qabul qiluvchi bot)" rows="2"></textarea>
-        <input type="text" id="newProjectPm2Name" placeholder="PM2 process nomi (masalan tolov-bot), botlar panelida bog'lash uchun">
+        <textarea id="newProjectDescription" placeholder="Loyiha haqida qisqa kontekst — Claude har safar suhbat boshlanganda avtomatik biladi (masalan: poster-02, @avtopost3_bot, sodda versiya)" rows="2"></textarea>
+        <input type="text" id="newProjectPm2Name" placeholder="PM2 process nomi (masalan poster-02), botlar panelida bog'lash uchun">
       </div>
 
       <button type="button" id="newProjectToggle" class="new-project-toggle">+ yangi loyiha papkasi yaratish</button>
@@ -114,6 +150,9 @@
     <div class="drawer-panel hidden" id="panelFiles">
       <div class="file-breadcrumb-row">
         <div id="fileBreadcrumb" class="file-breadcrumb"></div>
+        <button type="button" id="gotoRootBtn" class="icon-btn" title="/root'ga o'tish" aria-label="/root'ga o'tish">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9"/></svg>
+        </button>
         <button type="button" id="uploadFileBtn" class="icon-btn" title="Fayl yuklash" aria-label="Fayl yuklash">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
         </button>
@@ -131,23 +170,16 @@
     </div>
 
     <div class="drawer-panel hidden" id="panelBots">
-      <div class="empty-hint">claudeweb'ning O'Z PM2 daemonidagi jarayonlar — holat, CPU/RAM, qayta ishga tushirish soni. Root'ning boshqa botlariga bu yerdan kirish yo'q. Har 12 soniyada avtomatik yangilanadi.</div>
+      <div class="empty-hint">PM2'dagi jarayonlar — holat, CPU/RAM, qayta ishga tushirish soni. Har 12 soniyada avtomatik yangilanadi.</div>
       <div id="botList" class="bot-list"></div>
     </div>
-
-    <div class="drawer-panel hidden" id="panelLimit">
-      <div id="rateLimitStats" class="rate-limit-stats"></div>
-      <div id="usageStats" class="usage-stats"></div>
-      <div class="empty-hint">"Joriy sessiya" faqat server ishga tushirilgandan beri hisoblanadi (server qayta ishga tushirilsa nolga qaytadi). 5-soatlik/haftalik limit — Claude hisobingizning haqiqiy holati.</div>
-    </div>
-
+    <!-- Qurilmalar — ixtiyoriy, SHOW_DEVICES_TAB bayrog'i bilan yoqiladi -->
     <div class="drawer-panel hidden" id="panelDevices">
       <div class="this-device">
         <div class="this-device-label">bu qurilma</div>
         <div id="thisDeviceList" class="this-device-list"></div>
       </div>
-
-      <div class="empty-hint">Boshqa kompyuterda ham shu ilova ishlab turgan bo'lishi kerak (npm start). U yerdagi lokal IP:port manzilini qo'shing.</div>
+      <div class="empty-hint">Boshqa kompyuterda ham shu ilova ishlab turgan bo'lishi kerak. U yerdagi lokal IP:port manzilini qo'shing.</div>
       <form id="addDeviceForm" class="create-project-form">
         <input type="text" id="newDeviceName" placeholder="nomi, masalan Ish kompyuteri" required>
         <input type="text" id="newDeviceUrl" placeholder="http://192.168.1.8:3210" required>
@@ -155,7 +187,82 @@
       </form>
       <div id="deviceList" class="project-list"></div>
     </div>
+
+    <!-- VPS holati — Claude'siz, to'g'ridan-to'g'ri o'qiladi (0 token) -->
+    <div class="drawer-panel hidden" id="panelStatus">
+      <div id="statusBody"></div>
+      <div id="emergencyBox" class="emergency-box hidden">
+        <div class="emergency-title">Favqulodda</div>
+        <div class="empty-hint">Fail2ban yoki firewall'ga tushib qolsangiz — Claude'siz, to'g'ridan-to'g'ri.</div>
+        <form id="unbanForm" class="create-project-form">
+          <input type="text" id="unbanIp" placeholder="IP manzil, masalan 84.54.x.x" required>
+          <button type="submit">banni yechish</button>
+        </form>
+        <button type="button" id="allowSshBtn" class="new-project-toggle">+ shu IP ga SSH (22) ni doimiy ochish</button>
+        <div id="bannedList" class="banned-list"></div>
+      </div>
+    </div>
+
   </aside>
+
+  <!-- ================= Sozlamalar ================= -->
+  <div id="settingsOverlay" class="overlay hidden"></div>
+  <div id="settingsSheet" class="settings-sheet" role="dialog" aria-modal="true" aria-label="Sozlamalar">
+    <div class="settings-header">
+      <span class="settings-title">Sozlamalar</span>
+      <button class="icon-btn" id="settingsCloseBtn" title="Yopish" aria-label="Yopish">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+
+      <div class="settings-group">
+        <div class="settings-group-title">Ko'rinish</div>
+        <button type="button" class="settings-row" id="themeBtn">
+          <span class="settings-row-main">
+            <span class="settings-row-label">Mavzu</span>
+            <span class="settings-row-desc">Fon rangi va yorug'lik</span>
+          </span>
+          <span class="settings-row-value" id="themeValue">Claude</span>
+        </button>
+      </div>
+
+      <div class="settings-group" id="notifyGroup">
+        <div class="settings-group-title">Bildirishnomalar</div>
+        <button type="button" class="settings-row" id="notifyBtn">
+          <span class="settings-row-main">
+            <span class="settings-row-label">Bildirishnoma</span>
+            <span class="settings-row-desc">Ruxsat so'ralganda va ish tugaganda xabar beradi</span>
+          </span>
+          <span class="settings-row-value" id="notifyValue">—</span>
+        </button>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Obuna limiti</div>
+        <div id="rateLimitStats" class="rate-limit-stats"></div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Hisob</div>
+        <a class="settings-row" href="/auth.html">
+          <span class="settings-row-main">
+            <span class="settings-row-label">Claude hisobini ulash</span>
+            <span class="settings-row-desc">Token / kalit — hisobni shu yerdan bog'lash</span>
+          </span>
+          <span class="settings-row-arrow" aria-hidden="true">›</span>
+        </a>
+        <button type="button" class="settings-row danger" id="logoutBtn">
+          <span class="settings-row-main">
+            <span class="settings-row-label">Chiqish</span>
+            <span class="settings-row-desc">Barcha qurilmalardagi sessiyalar tugaydi</span>
+          </span>
+          <span class="settings-row-arrow" aria-hidden="true">›</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
 
   <div id="fileViewerOverlay" class="overlay hidden"></div>
   <div id="fileViewer" class="file-viewer">
@@ -178,6 +285,8 @@
     <textarea id="fileViewerEditor" class="file-viewer-editor hidden" spellcheck="false"></textarea>
   </div>
 
+  <script src="/bash-explain.js"></script>
+  <script src="/ui-core.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

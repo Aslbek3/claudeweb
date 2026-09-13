@@ -1,8 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <rect width="100" height="100" rx="22" fill="#d97757"/>
-  <g fill="#f9f6ee">
-    <rect x="46" y="14" width="8" height="72" rx="4"/>
-    <rect x="46" y="14" width="8" height="72" rx="4" transform="rotate(60 50 50)"/>
-    <rect x="46" y="14" width="8" height="72" rx="4" transform="rotate(120 50 50)"/>
-  </g>
+  <rect width="100" height="100" rx="22" fill="#0d1117"/>
+  <rect x="8" y="8" width="84" height="84" rx="16" fill="#d97757"/>
+  <text x="50" y="66" font-size="52" text-anchor="middle" font-family="monospace" fill="#0d1117">&gt;_</text>
 </svg>

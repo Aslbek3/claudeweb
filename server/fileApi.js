@@ -20,6 +20,7 @@ function listDir(root, rel) {
   const dirents = fs.readdirSync(dirPath, { withFileTypes: true });
   return dirents
     .filter((d) => !(d.isDirectory() && IGNORE_DIRS.has(d.name)))
+    .filter((d) => !d.name.startsWith('.'))
     .map((d) => {
       const type = d.isDirectory() ? 'dir' : 'file';
       let size = 0;
@@ -66,4 +67,25 @@ function writeFileSafe(root, rel, content) {
   return { size: Buffer.byteLength(content, 'utf8') };
 }
 
-module.exports = { listDir, readFileSafe, writeFileSafe, mkdir, resolveWithin };
+function deleteEntry(root, rel) {
+  const target = resolveWithin(root, rel);
+  if (target === path.resolve(root)) {
+    throw new Error("Ildiz papkani o'chirib bo'lmaydi");
+  }
+  fs.rmSync(target, { recursive: true, force: false });
+}
+
+function renameEntry(root, rel, newName) {
+  if (typeof newName !== 'string' || !newName.trim() || /[\\/]/.test(newName) || newName === '.' || newName === '..') {
+    throw new Error("Noto'g'ri nom");
+  }
+  const source = resolveWithin(root, rel);
+  const dest = path.join(path.dirname(source), newName.trim());
+  if (fs.existsSync(dest)) {
+    throw new Error('Bu nomda fayl yoki papka allaqachon mavjud');
+  }
+  fs.renameSync(source, dest);
+  return { name: newName.trim() };
+}
+
+module.exports = { listDir, readFileSafe, writeFileSafe, mkdir, deleteEntry, renameEntry, resolveWithin };
