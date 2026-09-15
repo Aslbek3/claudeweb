@@ -297,8 +297,16 @@ bitta**. Farqlar faqat `.env` va `server/config.js` da to'planadi.
 | Standart ruxsat rejimi | `manual` | `avto` |
 | Favqulodda amallar (unban, UFW) | o'chirilgan (403) | yoqilgan |
 | `/savdo` proksisi | yoqilgan (`PROXY_PORT=3212`) | o'chirilgan |
-| "Qurilmalar" tabi | yoqilgan | o'chirilgan |
 | Bir vaqtdagi sessiyalar | 2 | 3 |
+
+⚠️ **2026-09-15 tuzatildi:** birlashtirishda "qurilmalar" (devices) tabi
+`SHOW_DEVICES_TAB` bayrog'i ortiga qo'yilib, ushbu loyihada yoqilgan holda
+qoldirilgan edi — bu noto'g'ri qaror bo'lgan: foydalanuvchi buni so'ramagan
+va foydasiz funksiya deb topdi. (Fayl tarixidagi eski yozuvlar — masalan
+"qurilmalar tabiga tegilmadi" — o'sha paytdagi boshqa tozalash ishiga
+tegishli, bu funksiyaning kerakliligiga oid emas.) Endi ikkala loyihadan
+ham butunlay olib tashlandi (server, klient, HTML, CSS) — bayroq ham, kod
+ham qolmadi.
 
 **Nega birlashtirildi:** rootweb'da 20 dan ortiq xavfsizlik va UI tuzatishi
 qilingan edi, bu yerda ularning BIRORTASI yo'q edi — chunki har bir tuzatish
